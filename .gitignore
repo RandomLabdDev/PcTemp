@@ -1,0 +1,28 @@
+# Compilaciones y paquetes
+/PcTemp/
+/PcTemp-Release/
+/dist/
+/PcTemp-Test*/
+/installer/payload.zip
+*.zip
+
+# Visual Studio / .NET
+.vs/
+bin/
+obj/
+*.user
+*.suo
+*.cache
+
+# Registros y diagnósticos locales
+*.log
+*.dmp
+diagnostic*.txt
+
+# Sistema operativo y editores
+Thumbs.db
+Desktop.ini
+.DS_Store
+.idea/
+.vscode/
+

@@ -1,0 +1,29 @@
+PcTemp incluye LibreHardwareMonitorLib 0.9.7-pre705 y sus dependencias oficiales.
+
+LibreHardwareMonitor
+Copyright (c) LibreHardwareMonitor contributors
+Licencia: Mozilla Public License 2.0 (MPL-2.0)
+Código fuente y licencia: https://github.com/LibreHardwareMonitor/LibreHardwareMonitor/commit/9837983c1d5d05b1222f3f12af3967f723ea65f4
+
+Las bibliotecas auxiliares conservan sus licencias y avisos originales. Puede
+consultar sus proyectos y metadatos desde las dependencias del paquete oficial:
+https://www.nuget.org/packages/LibreHardwareMonitorLib/0.9.7-pre705
+
+PcTemp no modifica el código de LibreHardwareMonitorLib; lo utiliza como
+biblioteca para consultar sensores de hardware.
+
+El icono de termómetro procede de Bootstrap Icons (thermometer-half),
+Copyright (c) 2019-2024 The Bootstrap Authors, bajo licencia MIT.
+https://icons.getbootstrap.com/icons/thermometer-half/
+
+PcTemp distribuye sin modificaciones el instalador oficial firmado de PawnIO
+2.2.0. PawnIO es la capa de acceso de bajo nivel usada por LibreHardwareMonitor.
+La edición binaria oficial tiene licencia propietaria; su instalador permite la
+redistribución. PcTemp lo ejecuta en modo silencioso durante la instalación.
+Proyecto y descargas oficiales: https://github.com/namazso/PawnIO.Setup
+
+DSEG Font Family 0.46
+Copyright (c) 2014-2020 Keshikan
+Licencia: SIL Open Font License 1.1 (OFL-1.1)
+La licencia completa se incluye como DSEG-LICENSE.txt.
+Proyecto oficial: https://github.com/keshikan/DSEG

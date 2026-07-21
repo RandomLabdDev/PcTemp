@@ -1,0 +1,37 @@
+name: Compilar PcTemp
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-build:
+    runs-on: windows-latest
+    steps:
+      - name: Obtener código
+        uses: actions/checkout@v4
+
+      - name: Compilar aplicación e instalador
+        shell: powershell
+        run: .\build-installer.ps1 -Clean
+
+      - name: Publicar compilación portátil
+        uses: actions/upload-artifact@v4
+        with:
+          name: PcTemp-portable
+          path: PcTemp-Release/**
+          if-no-files-found: error
+
+      - name: Publicar instalador
+        uses: actions/upload-artifact@v4
+        with:
+          name: PcTemp-installer
+          path: dist/PcTemp-Setup-*.exe
+          if-no-files-found: error
+
