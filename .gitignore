@@ -26,3 +26,8 @@ Desktop.ini
 .idea/
 .vscode/
 
+# Cloudflare Worker
+/report-worker/node_modules/
+/report-worker/.wrangler/
+/report-worker/.dev.vars*
+/report-worker/.env*

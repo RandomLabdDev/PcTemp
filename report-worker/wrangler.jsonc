@@ -1,0 +1,27 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "pctemp-reports",
+  "main": "src/index.js",
+  "compatibility_date": "2026-07-21",
+  "workers_dev": true,
+  "observability": {
+    "enabled": true
+  },
+  "vars": {
+    "GITHUB_OWNER": "RandomLabdDev",
+    "GITHUB_REPOSITORY": "PcTemp-Reports"
+  },
+  "secrets": {
+    "required": ["GITHUB_TOKEN"]
+  },
+  "ratelimits": [
+    {
+      "name": "REPORT_LIMITER",
+      "namespace_id": "13059",
+      "simple": {
+        "limit": 6,
+        "period": 60
+      }
+    }
+  ]
+}

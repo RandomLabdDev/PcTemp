@@ -103,6 +103,8 @@ docs/images/  Capturas usadas por la documentación
 
 PcTemp funciona localmente y no envía telemetría. Los diagnósticos de hardware pueden contener modelos, ranuras o números de serie; revísalos antes de publicarlos en una incidencia.
 
+La carpeta `report-worker/` contiene la base del servicio opcional de informes anónimos. El servicio descarta campos no reconocidos, limita cada cuerpo a 48 KiB y crea incidencias en un repositorio privado. La versión publicada de PcTemp todavía no utiliza este servicio: su activación requerirá consentimiento explícito en la aplicación. El token de GitHub se configura como secreto de Cloudflare y nunca se incluye en el programa ni en este repositorio.
+
 ## Contacto
 
 - Correo: [randomlabdev@gmail.com](mailto:randomlabdev@gmail.com)
