@@ -1,6 +1,7 @@
 using System;
 using System.Diagnostics;
 using System.Drawing;
+using System.Globalization;
 using System.IO;
 using System.IO.Compression;
 using System.Linq;
@@ -15,18 +16,20 @@ using Microsoft.Win32;
 [assembly: AssemblyTitle("PcTemp Setup")]
 [assembly: AssemblyProduct("PcTemp")]
 [assembly: AssemblyCompany("PcTemp")]
-[assembly: AssemblyVersion("1.13.60.0")]
-[assembly: AssemblyFileVersion("1.13.60.0")]
+[assembly: AssemblyVersion("1.13.63.0")]
+[assembly: AssemblyFileVersion("1.13.63.0")]
 
 namespace PcTempInstaller
 {
     internal static class Program
     {
         private const string ProductName = "PcTemp";
-        internal const string Version = "1.13.60";
+        internal const string Version = "1.13.63";
         private const string TaskName = "PcTemp";
         private const string LegacyTaskName = "PcTemp_Startup";
+        private const string PawnIoRepairTaskName = "PcTemp_PawnIO_Repair";
         private const string UninstallKey = @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\PcTemp";
+        private const string SettingsKey = @"Software\PcTemp";
         private const string InstallMarkerFile = ".pctemp-install";
         private const string PawnIoManagedValue = "PawnIoManagedByPcTemp";
         private const string PawnIoSha256 = "1F519A22E47187F70A1379A48CA604981C4FCF694F4E65B734AAA74A9FBA3032";
@@ -34,11 +37,20 @@ namespace PcTempInstaller
         [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
         private static extern bool MoveFileEx(string existingFileName, string newFileName, int flags);
 
+        [DllImport("dwmapi.dll")]
+        private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attribute, ref int value, int valueSize);
+
         [STAThread]
         private static void Main(string[] args)
         {
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
+
+            if (args.Length > 1 && string.Equals(args[0], "--repair-pawnio", StringComparison.OrdinalIgnoreCase))
+            {
+                CompletePawnIoRepair(args[1]);
+                return;
+            }
 
             if (args.Length > 0 && string.Equals(args[0], "--uninstall", StringComparison.OrdinalIgnoreCase))
             {
@@ -118,7 +130,7 @@ namespace PcTempInstaller
             return target;
         }
 
-        internal static bool Install(string installDirectory, bool createDesktopShortcut, Action<string> progress)
+        internal static bool Install(string installDirectory, bool createDesktopShortcut, bool sendErrorReports, Action<string> progress)
         {
             string previousTarget = RegisteredInstallDirectory;
             bool? registeredPawnIoOwnership = GetRegisteredPawnIoOwnership();
@@ -135,7 +147,8 @@ namespace PcTempInstaller
 
             if (progress != null) progress("Instalando acceso integrado a sensores PawnIO…");
             bool pawnIoInstalledNow;
-            bool rebootRequired = InstallPawnIo(target, out pawnIoInstalledNow);
+            bool pawnIoRepairPending;
+            bool rebootRequired = InstallPawnIo(target, out pawnIoInstalledNow, out pawnIoRepairPending);
             bool pawnIoManaged = registeredPawnIoOwnership.HasValue
                 ? registeredPawnIoOwnership.Value
                 : (!string.IsNullOrWhiteSpace(previousTarget) && IsPawnIoDriverInstalled());
@@ -147,8 +160,14 @@ namespace PcTempInstaller
             if (!string.Equals(installedSetup, currentSetup, StringComparison.OrdinalIgnoreCase))
                 File.Copy(currentSetup, installedSetup, true);
 
+            if (pawnIoRepairPending)
+                CreatePawnIoRepairTask(installedSetup, target);
+            else
+                DeletePawnIoRepairTask();
+
             CreateShortcuts(target, installedSetup, createDesktopShortcut);
             CreateStartupTask(Path.Combine(target, "PcTemp.exe"));
+            SaveErrorReportConsent(sendErrorReports);
             RegisterUninstaller(target, installedSetup, pawnIoManaged);
             RemovePreviousInstallation(previousTarget, target);
 
@@ -157,9 +176,10 @@ namespace PcTempInstaller
             return rebootRequired;
         }
 
-        private static bool InstallPawnIo(string target, out bool installedByPcTemp)
+        private static bool InstallPawnIo(string target, out bool installedByPcTemp, out bool repairAfterRestart)
         {
             installedByPcTemp = false;
+            repairAfterRestart = false;
             string installer = Path.Combine(target, "PawnIO_setup.exe");
             if (!File.Exists(installer))
                 throw new FileNotFoundException("El paquete no contiene el instalador integrado de PawnIO.", installer);
@@ -174,6 +194,11 @@ namespace PcTempInstaller
             // PawnIO devuelve ERROR_ALREADY_EXISTS (183) cuando su controlador ya
             // está registrado. Evitamos relanzarlo si la instalación existente es válida.
             if (IsPawnIoDriverInstalled()) return false;
+            if (TryRestorePawnIoDriver())
+            {
+                installedByPcTemp = true;
+                return false;
+            }
 
             ProcessStartInfo start = new ProcessStartInfo
             {
@@ -200,19 +225,196 @@ namespace PcTempInstaller
                     return true;
                 }
                 if (process.ExitCode == 183 && IsPawnIoDriverInstalled()) return false;
+                if (process.ExitCode == 183 && HasPawnIoServiceRegistration())
+                {
+                    MarkPawnIoServiceForRepair();
+                    installedByPcTemp = true;
+                    repairAfterRestart = true;
+                    return true;
+                }
+                if (process.ExitCode == 1072)
+                {
+                    // ERROR_SERVICE_MARKED_FOR_DELETE: el controlador anterior sigue
+                    // pendiente de eliminación hasta reiniciar Windows.
+                    installedByPcTemp = true;
+                    repairAfterRestart = true;
+                    return true;
+                }
                 throw new InvalidOperationException("PawnIO no pudo instalarse. Código: " + process.ExitCode + ".");
             }
         }
 
+        private static void CompletePawnIoRepair(string requestedTarget)
+        {
+            try
+            {
+                string registered = RegisteredInstallDirectory;
+                if (string.IsNullOrWhiteSpace(registered))
+                {
+                    DeletePawnIoRepairTask();
+                    return;
+                }
+
+                string target = Path.GetFullPath(requestedTarget).TrimEnd(Path.DirectorySeparatorChar);
+                string expected = Path.GetFullPath(registered).TrimEnd(Path.DirectorySeparatorChar);
+                if (!string.Equals(target, expected, StringComparison.OrdinalIgnoreCase))
+                {
+                    DeletePawnIoRepairTask();
+                    return;
+                }
+
+                bool installedByPcTemp;
+                bool repairPending;
+                InstallPawnIo(target, out installedByPcTemp, out repairPending);
+                if (!repairPending) DeletePawnIoRepairTask();
+            }
+            catch
+            {
+                // No dejamos una tarea de arranque permanente ante otro tipo de error.
+                DeletePawnIoRepairTask();
+            }
+        }
+
+        private static void CreatePawnIoRepairTask(string setupPath, string target)
+        {
+            DeletePawnIoRepairTask();
+            dynamic service = Activator.CreateInstance(Type.GetTypeFromProgID("Schedule.Service"));
+            service.Connect();
+            dynamic folder = service.GetFolder("\\");
+            dynamic definition = service.NewTask(0);
+            definition.RegistrationInfo.Description = "Completa PawnIO después de reiniciar Windows.";
+            definition.Principal.UserId = "SYSTEM";
+            definition.Principal.LogonType = 5;
+            definition.Principal.RunLevel = 1;
+            definition.Settings.Enabled = true;
+            definition.Settings.StartWhenAvailable = true;
+            definition.Settings.ExecutionTimeLimit = "PT5M";
+            definition.Settings.MultipleInstances = 2;
+            dynamic trigger = definition.Triggers.Create(8);
+            trigger.Enabled = true;
+            dynamic action = definition.Actions.Create(0);
+            action.Path = setupPath;
+            action.Arguments = "--repair-pawnio \"" + target + "\"";
+            action.WorkingDirectory = target;
+            folder.RegisterTaskDefinition(PawnIoRepairTaskName, definition, 6, "SYSTEM", null, 5, null);
+        }
+
+        private static void DeletePawnIoRepairTask()
+        {
+            try
+            {
+                dynamic service = Activator.CreateInstance(Type.GetTypeFromProgID("Schedule.Service"));
+                service.Connect();
+                dynamic folder = service.GetFolder("\\");
+                try { folder.DeleteTask(PawnIoRepairTaskName, 0); } catch { }
+            }
+            catch { }
+        }
+
+        internal static bool LoadErrorReportConsent()
+        {
+            try
+            {
+                using (RegistryKey key = Registry.CurrentUser.OpenSubKey(SettingsKey))
+                {
+                    if (key == null || key.GetValue("SendErrorReports") == null) return true;
+                    return Convert.ToInt32(key.GetValue("SendErrorReports")) != 0;
+                }
+            }
+            catch { return true; }
+        }
+
+        private static void SaveErrorReportConsent(bool enabled)
+        {
+            using (RegistryKey key = Registry.CurrentUser.CreateSubKey(SettingsKey))
+            {
+                key.SetValue("SendErrorReports", enabled ? 1 : 0, RegistryValueKind.DWord);
+                if (key.GetValue("InstallationId") == null)
+                    key.SetValue("InstallationId", Guid.NewGuid().ToString("D"), RegistryValueKind.String);
+            }
+        }
+
+        internal static void ApplyDarkTitleBar(IntPtr handle)
+        {
+            if (handle == IntPtr.Zero || Environment.OSVersion.Version.Major < 10) return;
+            int enabled = 1;
+            try
+            {
+                if (DwmSetWindowAttribute(handle, 20, ref enabled, sizeof(int)) != 0)
+                    DwmSetWindowAttribute(handle, 19, ref enabled, sizeof(int));
+                int caption = ColorTranslator.ToWin32(Color.FromArgb(24, 24, 27));
+                int text = ColorTranslator.ToWin32(Color.White);
+                int border = ColorTranslator.ToWin32(Color.FromArgb(55, 57, 64));
+                DwmSetWindowAttribute(handle, 35, ref caption, sizeof(int));
+                DwmSetWindowAttribute(handle, 36, ref text, sizeof(int));
+                DwmSetWindowAttribute(handle, 34, ref border, sizeof(int));
+            }
+            catch { }
+        }
+
         private static bool IsPawnIoDriverInstalled()
         {
+            string imagePath;
+            int startMode;
+            return TryGetPawnIoService(out imagePath, out startMode) && startMode != 4 && File.Exists(imagePath);
+        }
+
+        private static bool HasPawnIoServiceRegistration()
+        {
+            string imagePath;
+            int startMode;
+            return TryGetPawnIoService(out imagePath, out startMode);
+        }
+
+        private static bool TryRestorePawnIoDriver()
+        {
+            string imagePath;
+            int startMode;
+            if (!TryGetPawnIoService(out imagePath, out startMode) || startMode != 4 || !File.Exists(imagePath))
+                return false;
+
+            try
+            {
+                string sc = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "System32", "sc.exe");
+                int configExitCode;
+                RunHiddenProcess(sc, "config PawnIO start= demand", out configExitCode);
+                if (configExitCode != 0) return false;
+
+                int startExitCode;
+                RunHiddenProcess(sc, "start PawnIO", out startExitCode);
+                if ((startExitCode == 0 || startExitCode == 1056) && IsPawnIoDriverInstalled())
+                    return true;
+
+                MarkPawnIoServiceForRepair();
+                return false;
+            }
+            catch { return false; }
+        }
+
+        private static void MarkPawnIoServiceForRepair()
+        {
+            try
+            {
+                string sc = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "System32", "sc.exe");
+                int ignored;
+                RunHiddenProcess(sc, "config PawnIO start= disabled", out ignored);
+                RunHiddenProcess(sc, "delete PawnIO", out ignored);
+            }
+            catch { }
+        }
+
+        private static bool TryGetPawnIoService(out string imagePath, out int startMode)
+        {
+            imagePath = null;
+            startMode = 4;
             try
             {
                 using (RegistryKey service = Registry.LocalMachine.OpenSubKey(@"SYSTEM\CurrentControlSet\Services\PawnIO"))
                 {
                     if (service == null) return false;
-                    string imagePath = Convert.ToString(service.GetValue("ImagePath"));
+                    imagePath = Convert.ToString(service.GetValue("ImagePath"));
                     if (string.IsNullOrWhiteSpace(imagePath)) return false;
+                    startMode = Convert.ToInt32(service.GetValue("Start", 4), CultureInfo.InvariantCulture);
 
                     string windows = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
                     if (imagePath.StartsWith(@"\SystemRoot\", StringComparison.OrdinalIgnoreCase))
@@ -222,11 +424,14 @@ namespace PcTempInstaller
                     else
                         imagePath = Environment.ExpandEnvironmentVariables(imagePath);
 
-                    return File.Exists(imagePath);
+                    imagePath = Path.GetFullPath(imagePath);
+                    return true;
                 }
             }
             catch
             {
+                imagePath = null;
+                startMode = 4;
                 return false;
             }
         }
@@ -818,6 +1023,7 @@ namespace PcTempInstaller
                 dynamic folder = service.GetFolder("\\");
                 try { folder.DeleteTask(TaskName, 0); } catch { }
                 try { folder.DeleteTask(LegacyTaskName, 0); } catch { }
+                try { folder.DeleteTask(PawnIoRepairTaskName, 0); } catch { }
             }
             catch { }
         }
@@ -832,13 +1038,15 @@ namespace PcTempInstaller
         private readonly TextBox _installPath;
         private readonly Button _browse;
         private readonly CheckBox _desktopShortcut;
+        private readonly CheckBox _errorReports;
+        private readonly Label _errorReportsInfo;
         private readonly Label _features;
 
         public SetupForm()
         {
             bool installed = Program.IsInstalled;
             Text = "Instalador de PcTemp " + Program.Version;
-            ClientSize = new Size(570, 390);
+            ClientSize = new Size(570, 450);
             FormBorderStyle = FormBorderStyle.FixedDialog;
             MaximizeBox = false;
             StartPosition = FormStartPosition.CenterScreen;
@@ -906,6 +1114,27 @@ namespace PcTempInstaller
             };
             Controls.Add(_desktopShortcut);
 
+            _errorReports = new CheckBox
+            {
+                Text = "Ayudar a mejorar la aplicación enviando informes anónimos de fallos",
+                Checked = Program.LoadErrorReportConsent(),
+                AutoSize = true,
+                Location = new Point(32, 275),
+                ForeColor = Color.White,
+                UseVisualStyleBackColor = true
+            };
+            Controls.Add(_errorReports);
+
+            _errorReportsInfo = new Label
+            {
+                Text = "Privacidad: la opción viene marcada, puedes desmarcarla antes de instalar o cambiarla después desde la aplicación.",
+                ForeColor = Color.DarkGray,
+                AutoSize = false,
+                Size = new Size(485, 40),
+                Location = new Point(51, 298)
+            };
+            Controls.Add(_errorReportsInfo);
+
             _features = new Label
             {
                 Text = "✓ PawnIO 2.2.0 integrado\n✓ Inicio automático con Windows\n✓ Desinstalación completa de archivos, tareas y registro",
@@ -921,7 +1150,7 @@ namespace PcTempInstaller
                 ForeColor = Color.DarkGray,
                 AutoSize = false,
                 Size = new Size(506, 42),
-                Location = new Point(32, 292)
+                Location = new Point(32, 348)
             };
             Controls.Add(_status);
 
@@ -932,7 +1161,7 @@ namespace PcTempInstaller
                 ForeColor = Color.White,
                 FlatStyle = FlatStyle.Flat,
                 Size = new Size(170, 36),
-                Location = new Point(368, 340),
+                Location = new Point(368, 400),
                 Cursor = Cursors.Hand
             };
             _install.Click += InstallClicked;
@@ -945,7 +1174,7 @@ namespace PcTempInstaller
                 ForeColor = Color.White,
                 FlatStyle = FlatStyle.Flat,
                 Size = new Size(170, 36),
-                Location = new Point(178, 258),
+                Location = new Point(178, 325),
                 Cursor = Cursors.Hand,
                 Visible = installed
             };
@@ -957,6 +1186,12 @@ namespace PcTempInstaller
             if (installed) ApplyCompletedLayout();
         }
 
+        protected override void OnHandleCreated(EventArgs e)
+        {
+            base.OnHandleCreated(e);
+            Program.ApplyDarkTitleBar(Handle);
+        }
+
         private void ApplyCompletedLayout()
         {
             _installPathLabel.Visible = false;
@@ -964,10 +1199,13 @@ namespace PcTempInstaller
             _browse.Visible = false;
             _desktopShortcut.Visible = false;
             _features.Location = new Point(32, 116);
-            _status.Location = new Point(32, 202);
-            _install.Location = new Point(368, 258);
+            _errorReports.Location = new Point(32, 188);
+            _errorReportsInfo.Location = new Point(51, 213);
+            _status.Location = new Point(32, 275);
+            _install.Location = new Point(368, 325);
+            _uninstall.Location = new Point(178, 325);
             _uninstall.Visible = true;
-            ClientSize = new Size(570, 310);
+            ClientSize = new Size(570, 375);
         }
 
         private void BrowseClicked(object sender, EventArgs e)
@@ -997,7 +1235,7 @@ namespace PcTempInstaller
             {
                 string target = Program.ValidateInstallDirectory(_installPath.Text);
                 _installPath.Text = target;
-                bool rebootRequired = Program.Install(target, _desktopShortcut.Checked, delegate(string message)
+                bool rebootRequired = Program.Install(target, _desktopShortcut.Checked, _errorReports.Checked, delegate(string message)
                 {
                     _status.Text = message;
                     _status.Refresh();

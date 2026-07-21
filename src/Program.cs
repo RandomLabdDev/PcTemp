@@ -9,6 +9,7 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Management;
+using System.Net;
 using System.Runtime.InteropServices;
 using System.Security.Principal;
 using System.Text;
@@ -21,7 +22,7 @@ namespace PcTemp
 {
     internal static class Program
     {
-        internal const string AppVersion = "1.13.60";
+        internal const string AppVersion = "1.13.63";
         internal const string ContactEmail = "randomlabdev@gmail.com";
         internal const string ProjectUrl = "https://github.com/RandomLabdDev/PcTemp";
         private const string MutexName = "Local\\PcTemp_5D9232C8_57FD_47DB_AA68_F8BE5A2D9274";
@@ -107,6 +108,18 @@ namespace PcTemp
                     {
                         Application.EnableVisualStyles();
                         Application.SetCompatibleTextRenderingDefault(false);
+                        Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
+                        Application.ThreadException += delegate(object sender, ThreadExceptionEventArgs e)
+                        {
+                            CrashReporter.Report(e.Exception, "Interfaz", "Excepción no controlada", null);
+                            MessageBox.Show("PcTemp ha detectado un fallo inesperado. Si autorizaste los informes, se enviará una traza técnica anónima.\n\n" +
+                                e.Exception.Message, "PcTemp", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                        };
+                        AppDomain.CurrentDomain.UnhandledException += delegate(object sender, UnhandledExceptionEventArgs e)
+                        {
+                            Exception exception = e.ExceptionObject as Exception ?? new Exception("Error no controlado.");
+                            CrashReporter.ReportFatal(exception, "Aplicación", "Cierre inesperado", null);
+                        };
                         using (TrayApplication app = new TrayApplication(showEvent, startupLaunch))
                             Application.Run(app);
                     }
@@ -122,6 +135,204 @@ namespace PcTemp
         {
             using (WindowsIdentity identity = WindowsIdentity.GetCurrent())
                 return new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator);
+        }
+    }
+
+    internal static class CrashReporter
+    {
+        private const string SettingsKey = @"Software\PcTemp";
+        private const string Endpoint = "https://pctemp-reports.randomlabdev.workers.dev/v1/report";
+        private static readonly object Sync = new object();
+        private static readonly HashSet<string> SentSignatures = new HashSet<string>(StringComparer.Ordinal);
+
+        internal static void Report(Exception exception, string component, string action, TemperatureSnapshot snapshot)
+        {
+            if (exception == null || !HasConsent()) return;
+            if (!Reserve(exception, component, action)) return;
+
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                try { Send(exception, component, action, snapshot); }
+                catch { }
+            });
+        }
+
+        internal static void ReportFatal(Exception exception, string component, string action, TemperatureSnapshot snapshot)
+        {
+            if (exception == null || !HasConsent() || !Reserve(exception, component, action)) return;
+            try { Send(exception, component, action, snapshot); }
+            catch { }
+        }
+
+        private static bool Reserve(Exception exception, string component, string action)
+        {
+            string signature = exception.GetType().FullName + "|" + component + "|" + action;
+            lock (Sync) return SentSignatures.Add(signature);
+        }
+
+        internal static bool ConsentEnabled
+        {
+            get { return HasConsent(); }
+        }
+
+        internal static void SetConsent(bool enabled)
+        {
+            try
+            {
+                using (RegistryKey key = Registry.CurrentUser.CreateSubKey(SettingsKey))
+                {
+                    key.SetValue("SendErrorReports", enabled ? 1 : 0, RegistryValueKind.DWord);
+                    if (enabled && key.GetValue("InstallationId") == null)
+                        key.SetValue("InstallationId", Guid.NewGuid().ToString("D"), RegistryValueKind.String);
+                }
+            }
+            catch { }
+        }
+
+        private static bool HasConsent()
+        {
+            try
+            {
+                using (RegistryKey key = Registry.CurrentUser.OpenSubKey(SettingsKey))
+                    return key != null && Convert.ToInt32(key.GetValue("SendErrorReports", 0), CultureInfo.InvariantCulture) != 0;
+            }
+            catch { return false; }
+        }
+
+        private static string InstallationId()
+        {
+            try
+            {
+                using (RegistryKey key = Registry.CurrentUser.CreateSubKey(SettingsKey))
+                {
+                    string value = Convert.ToString(key.GetValue("InstallationId"), CultureInfo.InvariantCulture);
+                    Guid id;
+                    if (Guid.TryParse(value, out id)) return id.ToString("D");
+                    value = Guid.NewGuid().ToString("D");
+                    key.SetValue("InstallationId", value, RegistryValueKind.String);
+                    return value;
+                }
+            }
+            catch { return Guid.NewGuid().ToString("D"); }
+        }
+
+        private static void Send(Exception exception, string component, string action, TemperatureSnapshot snapshot)
+        {
+            string json = BuildJson(exception, component, action, snapshot);
+            byte[] body = Encoding.UTF8.GetBytes(json);
+            ServicePointManager.SecurityProtocol = (SecurityProtocolType)3072;
+            HttpWebRequest request = (HttpWebRequest)WebRequest.Create(Endpoint);
+            request.Method = "POST";
+            request.ContentType = "application/json; charset=utf-8";
+            request.UserAgent = "PcTemp/" + Program.AppVersion;
+            request.Timeout = 8000;
+            request.ReadWriteTimeout = 8000;
+            request.ContentLength = body.Length;
+            using (Stream stream = request.GetRequestStream()) stream.Write(body, 0, body.Length);
+            using (HttpWebResponse response = (HttpWebResponse)request.GetResponse()) { }
+        }
+
+        private static string BuildJson(Exception exception, string component, string action, TemperatureSnapshot snapshot)
+        {
+            StringBuilder json = new StringBuilder(4096);
+            json.Append("{\"schema\":1,\"consent\":true");
+            Add(json, "reportId", Guid.NewGuid().ToString("D"));
+            Add(json, "installationId", InstallationId());
+            Add(json, "appVersion", Program.AppVersion);
+            Add(json, "timestampUtc", DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture));
+            json.Append(",\"system\":{");
+            AddFirst(json, "osVersion", Environment.OSVersion.VersionString);
+            Add(json, "architecture", Environment.Is64BitOperatingSystem ? "x64" : "x86");
+            Add(json, "culture", CultureInfo.CurrentUICulture.Name);
+            json.Append("},\"hardware\":{");
+            AddFirst(json, "cpu", snapshot == null ? "" : snapshot.CpuName);
+            Add(json, "gpu", snapshot == null || !snapshot.Gpu.HasValue ? "" : snapshot.GpuName);
+            Add(json, "motherboard", snapshot == null ? "" : snapshot.BoardName);
+            Add(json, "memory", snapshot == null ? "" : string.Join(", ", snapshot.Memories.Select(x => x.Name).Distinct().Take(4).ToArray()));
+            json.Append("},\"exception\":{");
+            AddFirst(json, "type", exception.GetType().FullName ?? exception.GetType().Name);
+            Add(json, "message", Sanitize(exception.Message));
+            Add(json, "stackTrace", Sanitize(exception.ToString()));
+            json.Append("},\"context\":{");
+            AddFirst(json, "component", component);
+            Add(json, "action", action);
+            json.Append("},\"sensors\":[");
+            if (snapshot != null) AppendSensors(json, snapshot);
+            json.Append("]}");
+            return json.ToString();
+        }
+
+        private static void AppendSensors(StringBuilder json, TemperatureSnapshot snapshot)
+        {
+            bool first = true;
+            AppendSensor(json, ref first, "CPU", snapshot.CpuSensor, snapshot.Cpu);
+            AppendSensor(json, ref first, "GPU", snapshot.GpuSensor, snapshot.Gpu);
+            AppendSensor(json, ref first, "Placa base", snapshot.BoardSensor, snapshot.Board);
+            foreach (DiskTemperature disk in snapshot.Disks.Take(16))
+                AppendSensor(json, ref first, "Disco", disk.Sensor, disk.Value);
+            foreach (MemoryTemperature memory in snapshot.Memories.Take(12))
+                AppendSensor(json, ref first, "RAM", memory.Sensor, memory.Value);
+        }
+
+        private static void AppendSensor(StringBuilder json, ref bool first, string component, string name, float? value)
+        {
+            if (!value.HasValue || float.IsNaN(value.Value) || float.IsInfinity(value.Value)) return;
+            if (!first) json.Append(',');
+            first = false;
+            json.Append('{');
+            AddFirst(json, "component", component);
+            Add(json, "name", name);
+            json.Append(",\"value\":").Append(value.Value.ToString("0.0", CultureInfo.InvariantCulture));
+            Add(json, "unit", "°C");
+            json.Append('}');
+        }
+
+        private static string Sanitize(string value)
+        {
+            string result = value ?? "";
+            try
+            {
+                string profile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+                if (!string.IsNullOrWhiteSpace(profile)) result = result.Replace(profile, "<perfil>");
+                if (!string.IsNullOrWhiteSpace(Environment.UserName)) result = result.Replace(Environment.UserName, "<usuario>");
+                if (!string.IsNullOrWhiteSpace(Environment.MachineName)) result = result.Replace(Environment.MachineName, "<equipo>");
+            }
+            catch { }
+            return result;
+        }
+
+        private static void AddFirst(StringBuilder json, string name, string value)
+        {
+            json.Append('"').Append(Escape(name)).Append("\":\"").Append(Escape(value)).Append('"');
+        }
+
+        private static void Add(StringBuilder json, string name, string value)
+        {
+            json.Append(",\"").Append(Escape(name)).Append("\":\"").Append(Escape(value)).Append('"');
+        }
+
+        private static string Escape(string value)
+        {
+            if (string.IsNullOrEmpty(value)) return "";
+            StringBuilder escaped = new StringBuilder(value.Length + 16);
+            foreach (char character in value)
+            {
+                switch (character)
+                {
+                    case '"': escaped.Append("\\\""); break;
+                    case '\\': escaped.Append("\\\\"); break;
+                    case '\b': escaped.Append("\\b"); break;
+                    case '\f': escaped.Append("\\f"); break;
+                    case '\n': escaped.Append("\\n"); break;
+                    case '\r': escaped.Append("\\r"); break;
+                    case '\t': escaped.Append("\\t"); break;
+                    default:
+                        if (character < 32) escaped.Append("\\u").Append(((int)character).ToString("x4"));
+                        else escaped.Append(character);
+                        break;
+                }
+            }
+            return escaped.ToString();
         }
     }
 
@@ -1254,6 +1465,7 @@ namespace PcTemp
                 catch (Exception ex)
                 {
                     error = ex.GetType().Name + ": " + ex.Message;
+                    CrashReporter.Report(ex, "Sensores", "Actualizar temperaturas", _snapshot);
                 }
 
                 if (_closing)
@@ -2024,6 +2236,29 @@ namespace PcTemp
         {
             string driver = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "System32", "drivers", "PawnIO.sys");
             if (File.Exists(driver)) return true;
+
+            try
+            {
+                using (RegistryKey service = Registry.LocalMachine.OpenSubKey(@"SYSTEM\CurrentControlSet\Services\PawnIO"))
+                {
+                    if (service != null && Convert.ToInt32(service.GetValue("Start", 4), CultureInfo.InvariantCulture) != 4)
+                    {
+                        string imagePath = Convert.ToString(service.GetValue("ImagePath"), CultureInfo.InvariantCulture);
+                        if (!string.IsNullOrWhiteSpace(imagePath))
+                        {
+                            string windows = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
+                            if (imagePath.StartsWith(@"\SystemRoot\", StringComparison.OrdinalIgnoreCase))
+                                imagePath = Path.Combine(windows, imagePath.Substring(@"\SystemRoot\".Length));
+                            else if (imagePath.StartsWith(@"\??\", StringComparison.OrdinalIgnoreCase))
+                                imagePath = imagePath.Substring(4);
+                            else
+                                imagePath = Environment.ExpandEnvironmentVariables(imagePath);
+                            if (File.Exists(imagePath)) return true;
+                        }
+                    }
+                }
+            }
+            catch { }
 
             foreach (RegistryView view in new[] { RegistryView.Registry64, RegistryView.Registry32 })
             {
@@ -3760,6 +3995,7 @@ namespace PcTemp
         private readonly MenuStrip _mainMenu;
         private readonly ToolStripMenuItem _optionsMenu;
         private readonly ToolStripMenuItem _startupMenuItem;
+        private readonly ToolStripMenuItem _errorReportsMenuItem;
         private readonly ToolStripMenuItem _themeMenuItem;
         private readonly ToolStripMenuItem _darkThemeMenuItem;
         private readonly ToolStripMenuItem _boardSensorMenuItem;
@@ -3927,6 +4163,15 @@ namespace PcTemp
                 if (!_updatingStartup && _setStartup != null)
                     _setStartup(_startupMenuItem.Checked);
             };
+            _errorReportsMenuItem = new ToolStripMenuItem("Enviar informes anónimos de fallos")
+            {
+                CheckOnClick = true,
+                Checked = CrashReporter.ConsentEnabled
+            };
+            _errorReportsMenuItem.CheckedChanged += delegate
+            {
+                CrashReporter.SetConsent(_errorReportsMenuItem.Checked);
+            };
             _themeMenuItem = new ToolStripMenuItem("Tema claro")
             {
                 Checked = !_darkTheme
@@ -3961,7 +4206,8 @@ namespace PcTemp
             _trayMenuItem.Click += delegate { if (openTraySettings != null) openTraySettings(); };
             _optionsMenu.DropDownItems.AddRange(new ToolStripItem[]
             {
-                _startupMenuItem, _themeMenuItem, _darkThemeMenuItem, _boardSensorMenuItem,
+                _startupMenuItem, _errorReportsMenuItem, new ToolStripSeparator(),
+                _themeMenuItem, _darkThemeMenuItem, _boardSensorMenuItem,
                 new ToolStripSeparator(), _trayMenuItem
             });
             _helpMenu = new ToolStripMenuItem("Ayuda")

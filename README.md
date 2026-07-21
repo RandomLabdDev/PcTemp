@@ -34,7 +34,8 @@ Descarga el instalador desde **GitHub Releases**, ejecútalo y pulsa **Instalar 
 - configura el inicio automático mediante una tarea con privilegios altos;
 - crea accesos para abrir, actualizar, reparar y desinstalar PcTemp;
 - registra la aplicación en **Configuración → Aplicaciones instaladas**;
-- instala PawnIO 2.2.0 silenciosamente cuando sea necesario.
+- instala o repara PawnIO 2.2.0 silenciosamente cuando sea necesario;
+- permite autorizar informes anónimos de fallos para ayudar a mejorar PcTemp.
 
 Una actualización conserva las preferencias del usuario. La desinstalación elimina los archivos, accesos, tareas, configuración y registro creados por PcTemp. PawnIO solo se retira si el instalador registró que fue incorporado por PcTemp; una instalación previa independiente se conserva.
 
@@ -101,9 +102,11 @@ docs/images/  Capturas usadas por la documentación
 
 ## Privacidad
 
-PcTemp funciona localmente y no envía telemetría. Los diagnósticos de hardware pueden contener modelos, ranuras o números de serie; revísalos antes de publicarlos en una incidencia.
+PcTemp procesa las temperaturas localmente. El instalador permite autorizar informes anónimos de fallos; la casilla aparece marcada, puede desmarcarse antes de instalar y modificarse después desde **Opciones → Enviar informes anónimos de fallos**.
 
-La carpeta `report-worker/` contiene la base del servicio opcional de informes anónimos. El servicio descarta campos no reconocidos, limita cada cuerpo a 48 KiB y crea incidencias en un repositorio privado. La versión publicada de PcTemp todavía no utiliza este servicio: su activación requerirá consentimiento explícito en la aplicación. El token de GitHub se configura como secreto de Cloudflare y nunca se incluye en el programa ni en este repositorio.
+Cuando están autorizados, los informes incluyen únicamente la versión de PcTemp, versión y arquitectura de Windows, cultura, modelos generales del hardware detectado, lecturas recientes y la traza técnica del error. PcTemp anonimiza localmente el perfil, nombre de usuario y nombre del equipo, y no envía archivos, documentos, credenciales ni números de serie.
+
+Los informes se entregan mediante el Worker de Cloudflare incluido en `report-worker/`. El servicio acepta una lista cerrada de campos, limita cada cuerpo a 48 KiB y crea incidencias en el repositorio privado `PcTemp-Reports`. El token de GitHub permanece como secreto de Cloudflare y nunca se incorpora a PcTemp, al instalador ni a este repositorio.
 
 ## Contacto
 
