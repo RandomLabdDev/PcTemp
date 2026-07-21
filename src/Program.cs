@@ -21,7 +21,7 @@ namespace PcTemp
 {
     internal static class Program
     {
-        internal const string AppVersion = "1.13.59";
+        internal const string AppVersion = "1.13.60";
         internal const string ContactEmail = "randomlabdev@gmail.com";
         internal const string ProjectUrl = "https://github.com/RandomLabdDev/PcTemp";
         private const string MutexName = "Local\\PcTemp_5D9232C8_57FD_47DB_AA68_F8BE5A2D9274";

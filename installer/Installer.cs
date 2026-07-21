@@ -15,15 +15,15 @@ using Microsoft.Win32;
 [assembly: AssemblyTitle("PcTemp Setup")]
 [assembly: AssemblyProduct("PcTemp")]
 [assembly: AssemblyCompany("PcTemp")]
-[assembly: AssemblyVersion("1.13.59.0")]
-[assembly: AssemblyFileVersion("1.13.59.0")]
+[assembly: AssemblyVersion("1.13.60.0")]
+[assembly: AssemblyFileVersion("1.13.60.0")]
 
 namespace PcTempInstaller
 {
     internal static class Program
     {
         private const string ProductName = "PcTemp";
-        internal const string Version = "1.13.59";
+        internal const string Version = "1.13.60";
         private const string TaskName = "PcTemp";
         private const string LegacyTaskName = "PcTemp_Startup";
         private const string UninstallKey = @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\PcTemp";
