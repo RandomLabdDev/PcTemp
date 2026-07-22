@@ -17,15 +17,15 @@ using Microsoft.Win32;
 [assembly: AssemblyTitle("PcTemp Setup")]
 [assembly: AssemblyProduct("PcTemp")]
 [assembly: AssemblyCompany("PcTemp")]
-[assembly: AssemblyVersion("1.13.65.0")]
-[assembly: AssemblyFileVersion("1.13.65.0")]
+[assembly: AssemblyVersion("1.13.70.0")]
+[assembly: AssemblyFileVersion("1.13.70.0")]
 
 namespace PcTempInstaller
 {
     internal static class Program
     {
         private const string ProductName = "PcTemp";
-        internal const string Version = "1.13.65";
+        internal const string Version = "1.13.70";
         private const string TaskName = "PcTemp";
         private const string LegacyTaskName = "PcTemp_Startup";
         private const string PawnIoRepairTaskName = "PcTemp_PawnIO_Repair";

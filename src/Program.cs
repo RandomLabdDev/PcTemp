@@ -22,7 +22,7 @@ namespace PcTemp
 {
     internal static class Program
     {
-        internal const string AppVersion = "1.13.65";
+        internal const string AppVersion = "1.13.70";
         internal const string ContactEmail = "randomlabdev@gmail.com";
         internal const string ProjectUrl = "https://github.com/RandomLabdDev/PcTemp";
         private const string MutexName = "Local\\PcTemp_5D9232C8_57FD_47DB_AA68_F8BE5A2D9274";
@@ -4257,26 +4257,27 @@ namespace PcTemp
 
     internal sealed class DashboardForm : Form
     {
-        private const int MinCardWidth = 270;
-        private const int MaxCardWidth = 430;
-        private const int CardHeight = 280;
-        private const int CardStrideY = CardHeight + 12;
-        private const int GroupHeaderHeight = 42;
-        private const int GroupHeaderStride = GroupHeaderHeight + 14;
+        private const int MinCardWidth = 220;
+        private const int MaxCardWidth = 330;
+        private const int CardHeight = 224;
+        private const int CardStrideY = CardHeight + 8;
+        private const int GroupHeaderHeight = 40;
+        private const int GroupHeaderStride = GroupHeaderHeight + 10;
         private const int CustomTitleHeight = 34;
         private const int CustomMenuHeight = 28;
-        private const int AdaptiveBottomSpace = 66;
+        private const int AdaptiveBottomSpace = 52;
         private static readonly object CardColorSync = new object();
         private static readonly Dictionary<string, Color> CardColorCache = new Dictionary<string, Color>(StringComparer.OrdinalIgnoreCase);
         // Todas las tarjetas comparten la misma tipografía. Mantener una instancia por
         // estilo evita crear decenas de objetos GDI idénticos al detectar componentes.
-        private static readonly Font CardTitleFont = new Font("Segoe UI Semibold", 10.5F);
-        private static readonly Font CardSubtitleFont = new Font("Segoe UI", 8.8F);
-        private static readonly Font CardValueFont = DigitalFontProvider.Create(36F);
-        private static readonly Font CardUnitFont = new Font("Segoe UI", 18F, FontStyle.Regular, GraphicsUnit.Point);
-        private static readonly Font CardStatusFont = new Font("Segoe UI Semibold", 9F);
-        private static readonly Font CardSensorFont = new Font("Segoe UI", 8.5F);
-        private static readonly Font CardTrayFont = new Font("Segoe UI Semibold", 9.3F);
+        private static readonly Font CardTitleFont = new Font("Segoe UI Semibold", 9.3F);
+        private static readonly Font CardSubtitleFont = new Font("Segoe UI", 7.9F);
+        private static readonly Font GroupSummaryFont = new Font("Segoe UI Semibold", 10.5F);
+        private static readonly Font CardValueFont = DigitalFontProvider.Create(30F);
+        private static readonly Font CardUnitFont = new Font("Segoe UI", 14F, FontStyle.Regular, GraphicsUnit.Point);
+        private static readonly Font CardStatusFont = new Font("Segoe UI Semibold", 7.9F);
+        private static readonly Font CardSensorFont = new Font("Segoe UI", 7.8F);
+        private static readonly Font CardTrayFont = new Font("Segoe UI Semibold", 8.3F);
         private readonly Label _cpuValue;
         private readonly Label _gpuValue;
         private readonly Label _boardValue;
@@ -4969,7 +4970,7 @@ namespace PcTemp
             Button button = header.Controls["GroupToggle"] as Button;
             Control line = header.Controls["GroupDivider"];
             if (title != null) title.ForeColor = text;
-            if (summary != null) summary.ForeColor = secondary;
+            if (summary != null) summary.ForeColor = text;
             if (button != null)
             {
                 button.ForeColor = text;
@@ -5068,7 +5069,8 @@ namespace PcTemp
                 Margin = new Padding(0, 8, 0, 6),
                 BackColor = BackColor,
                 Tag = groupId,
-                TabStop = false
+                TabStop = false,
+                Cursor = Cursors.Hand
             };
             Label name = new Label
             {
@@ -5077,30 +5079,34 @@ namespace PcTemp
                 Font = new Font("Segoe UI Semibold", 10F),
                 ForeColor = text,
                 AutoSize = true,
-                Location = new Point(4, 10)
+                Location = new Point(30, 10),
+                Cursor = Cursors.Hand
             };
             Label summary = new Label
             {
                 Name = "GroupSummary",
                 Text = "",
-                Font = CardSubtitleFont,
-                ForeColor = secondary,
+                Font = GroupSummaryFont,
+                ForeColor = text,
                 AutoSize = true,
-                Location = new Point(150, 12),
-                Visible = false
+                Location = new Point(190, 10),
+                Visible = false,
+                Cursor = Cursors.Hand
             };
             Button button = new Button
             {
                 Name = "GroupToggle",
-                Text = "⌃  Plegar",
-                Font = new Font("Segoe UI", 8.5F),
+                Text = "▲",
+                Font = new Font("Segoe UI Symbol", 9.5F, FontStyle.Regular),
                 ForeColor = text,
                 BackColor = BackColor,
                 FlatStyle = FlatStyle.Flat,
-                Size = new Size(112, 32),
-                Location = new Point(0, 5),
-                Anchor = AnchorStyles.Top | AnchorStyles.Right,
-                TabStop = true
+                Size = new Size(26, 32),
+                Location = new Point(0, 4),
+                Anchor = AnchorStyles.Top | AnchorStyles.Left,
+                TabStop = true,
+                Cursor = Cursors.Hand,
+                AccessibleName = "Plegar grupo"
             };
             button.FlatAppearance.BorderSize = 0;
             button.Click += toggle;
@@ -5115,11 +5121,12 @@ namespace PcTemp
             header.Controls.Add(summary);
             header.Controls.Add(button);
             header.Controls.Add(divider);
+            header.Click += toggle;
+            name.Click += toggle;
+            summary.Click += toggle;
             header.Resize += delegate
             {
-                button.Left = Math.Max(0, header.ClientSize.Width - button.Width - 2);
-                int summaryRight = button.Left - 12;
-                summary.MaximumSize = new Size(Math.Max(0, summaryRight - summary.Left), 22);
+                summary.MaximumSize = new Size(Math.Max(0, header.ClientSize.Width - summary.Left - 12), 26);
             };
             header.MouseWheel += ContentMouseWheel;
             return header;
@@ -5181,11 +5188,17 @@ namespace PcTemp
             if (name != null) name.Text = title + " (" + items.Count.ToString(CultureInfo.CurrentCulture) + ")";
             if (summary != null)
             {
-                summary.Text = string.Join("  ·  ", items.Select(item =>
+                if (name != null) summary.Left = name.Right + 28;
+                summary.Text = "Actual: " + string.Join("  ·  ", items.Select(item =>
                     (string.IsNullOrWhiteSpace(item.Value.Text) ? "--" : item.Value.Text) + "°"));
                 summary.Visible = collapsed && items.Count > 0;
+                summary.MaximumSize = new Size(Math.Max(0, header.ClientSize.Width - summary.Left - 12), 26);
             }
-            if (button != null) button.Text = collapsed ? "⌄  Expandir" : "⌃  Plegar";
+            if (button != null)
+            {
+                button.Text = collapsed ? "▼" : "▲";
+                button.AccessibleName = collapsed ? "Expandir " + title : "Plegar " + title;
+            }
         }
 
         private Panel CreateCard(string title, string subtitle, Color accent, Label value, Label sensor, string selectionId)
@@ -5211,16 +5224,16 @@ namespace PcTemp
                 Name = "CardIconTile",
                 AccentColor = cardColor,
                 DarkTheme = _darkTheme,
-                Location = new Point(18, 14),
-                Size = new Size(40, 40)
+                Location = new Point(12, 10),
+                Size = new Size(34, 34)
             };
             HardwareIcon componentIcon = new HardwareIcon
             {
                 Name = "CardIcon",
                 Kind = GetComponentIconKind(selectionId),
                 ForeColor = cardColor,
-                Location = new Point(6, 6),
-                Size = new Size(28, 28)
+                Location = new Point(5, 5),
+                Size = new Size(24, 24)
             };
             iconTile.Controls.Add(componentIcon);
             Label name = new Label
@@ -5231,8 +5244,8 @@ namespace PcTemp
                 Font = CardTitleFont,
                 AutoSize = false,
                 AutoEllipsis = false,
-                Size = new Size(cardWidth - 74, 20),
-                Location = new Point(68, 14),
+                Size = new Size(cardWidth - 60, 18),
+                Location = new Point(54, 8),
                 TextAlign = ContentAlignment.MiddleLeft
             };
             Label subtitleLabel = new Label
@@ -5243,8 +5256,8 @@ namespace PcTemp
                 Font = CardSubtitleFont,
                 AutoSize = false,
                 AutoEllipsis = true,
-                Size = new Size(cardWidth - 74, 20),
-                Location = new Point(68, 34),
+                Size = new Size(cardWidth - 60, 17),
+                Location = new Point(54, 26),
                 TextAlign = ContentAlignment.MiddleLeft
             };
             InfoIconButton infoButton = new InfoIconButton
@@ -5254,8 +5267,8 @@ namespace PcTemp
                 ForeColor = secondaryText,
                 BackColor = cardBackground,
                 FlatStyle = FlatStyle.Flat,
-                Size = new Size(32, 32),
-                Location = new Point(cardWidth - 48, 12),
+                Size = new Size(26, 26),
+                Location = new Point(cardWidth - 38, 8),
                 Cursor = Cursors.Hand,
                 TabStop = true,
                 UseVisualStyleBackColor = false
@@ -5272,7 +5285,7 @@ namespace PcTemp
             value.Font = CardValueFont;
             value.UseCompatibleTextRendering = false;
             value.AutoSize = !(value is DigitalValueLabel);
-            value.Location = new Point(20, 65);
+            value.Location = new Point(14, 47);
             Label unit = new Label
             {
                 Name = "CardUnit",
@@ -5280,7 +5293,7 @@ namespace PcTemp
                 ForeColor = secondaryText,
                 Font = CardUnitFont,
                 AutoSize = true,
-                Location = new Point(120, 91),
+                Location = new Point(100, 66),
                 Visible = false
             };
             Label status = new Label
@@ -5290,7 +5303,7 @@ namespace PcTemp
                 ForeColor = Color.FromArgb(72, 181, 199),
                 Font = CardStatusFont,
                 AutoSize = true,
-                Location = new Point(188, 107)
+                Location = new Point(148, 82)
             };
             status.TextChanged += delegate { LayoutCardContents(panel); };
             TemperatureSparkline graph = new TemperatureSparkline
@@ -5299,8 +5312,8 @@ namespace PcTemp
                 AccentColor = cardColor,
                 DarkTheme = _darkTheme,
                 StatusTarget = status,
-                Location = new Point(18, 137),
-                Size = new Size(234, 76)
+                Location = new Point(12, 107),
+                Size = new Size(196, 54)
             };
             sensor.Name = "CardSensor";
             sensor.Text = "Buscando sensor…";
@@ -5314,14 +5327,14 @@ namespace PcTemp
             {
                 Name = "CardDivider",
                 BackColor = _darkTheme ? Color.FromArgb(48, 50, 57) : Color.FromArgb(222, 225, 231),
-                Location = new Point(20, 224),
-                Size = new Size(cardWidth - 40, 1)
+                Location = new Point(14, 169),
+                Size = new Size(cardWidth - 28, 1)
             };
             ToggleSwitch tray = new ToggleSwitch
             {
                 Name = "TrayToggle",
-                Location = new Point(20, 239),
-                Size = new Size(52, 27),
+                Location = new Point(14, 181),
+                Size = new Size(44, 23),
                 AccentColor = cardColor,
                 Checked = _isTraySelected == null || _isTraySelected(selectionId),
                 Tag = selectionId
@@ -5338,7 +5351,7 @@ namespace PcTemp
                 ForeColor = primaryText,
                 Font = CardTrayFont,
                 AutoSize = true,
-                Location = new Point(82, 243),
+                Location = new Point(66, 184),
                 Cursor = Cursors.Hand
             };
             trayLabel.Click += delegate { tray.Checked = !tray.Checked; };
@@ -5347,8 +5360,8 @@ namespace PcTemp
                 Name = "ColorButton",
                 BackColor = savedColor,
                 FlatStyle = FlatStyle.Flat,
-                Size = new Size(29, 29),
-                Location = new Point(cardWidth - 48, 237),
+                Size = new Size(25, 25),
+                Location = new Point(cardWidth - 39, 180),
                 Cursor = Cursors.Hand,
                 TabStop = false
             };
@@ -5533,7 +5546,7 @@ namespace PcTemp
                 TextFormatFlags.NoPadding | TextFormatFlags.SingleLine).Width;
             int subtitleWidth = TextRenderer.MeasureText(subtitle ?? "", subtitleFont, Size.Empty,
                 TextFormatFlags.NoPadding | TextFormatFlags.SingleLine).Width;
-            return Math.Max(MinCardWidth, Math.Min(MaxCardWidth, Math.Max(titleWidth, subtitleWidth) + 82));
+            return Math.Max(MinCardWidth, Math.Min(MaxCardWidth, Math.Max(titleWidth, subtitleWidth) + 64));
         }
 
         private bool AdjustCardHeader(Panel panel, string title, string subtitle)
@@ -5570,20 +5583,20 @@ namespace PcTemp
             Control status = panel.Controls["CardStatus"];
             Control unit = panel.Controls["CardUnit"];
             Control info = panel.Controls["InfoButton"];
-            if (info != null) info.Left = innerWidth - info.Width - 16;
-            int headerRight = info == null ? innerWidth - 18 : info.Left - 8;
+            if (info != null) info.Left = innerWidth - info.Width - 12;
+            int headerRight = info == null ? innerWidth - 14 : info.Left - 6;
             if (name != null) name.Width = Math.Max(80, headerRight - name.Left);
             if (subtitle != null) subtitle.Width = Math.Max(80, headerRight - subtitle.Left);
-            if (graph != null) graph.Width = Math.Max(220, innerWidth - 36);
-            if (sensor != null) sensor.Width = Math.Max(220, innerWidth - 40);
-            if (divider != null) divider.Width = Math.Max(1, innerWidth - 40);
-            if (color != null) color.Left = innerWidth - color.Width - 19;
-            if (status != null) status.Left = Math.Max(150, innerWidth - status.Width - 20);
+            if (graph != null) graph.Width = Math.Max(176, innerWidth - 24);
+            if (sensor != null) sensor.Width = Math.Max(176, innerWidth - 28);
+            if (divider != null) divider.Width = Math.Max(1, innerWidth - 28);
+            if (color != null) color.Left = innerWidth - color.Width - 14;
+            if (status != null) status.Left = Math.Max(115, innerWidth - status.Width - 14);
             if (unit != null && panel.Controls["CardValue"] != null)
             {
                 Control value = panel.Controls["CardValue"];
                 unit.Left = value.Right + 1;
-                unit.Top = value.Top - 7;
+                unit.Top = value.Top - 4;
             }
         }
 
