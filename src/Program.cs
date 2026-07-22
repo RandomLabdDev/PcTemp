@@ -22,7 +22,7 @@ namespace PcTemp
 {
     internal static class Program
     {
-        internal const string AppVersion = "1.13.63";
+        internal const string AppVersion = "1.13.65";
         internal const string ContactEmail = "randomlabdev@gmail.com";
         internal const string ProjectUrl = "https://github.com/RandomLabdDev/PcTemp";
         private const string MutexName = "Local\\PcTemp_5D9232C8_57FD_47DB_AA68_F8BE5A2D9274";
@@ -31,6 +31,9 @@ namespace PcTemp
         [STAThread]
         private static void Main(string[] args)
         {
+            Application.EnableVisualStyles();
+            Application.SetCompatibleTextRenderingDefault(false);
+
             if (!IsCurrentProcessAdministrator())
             {
                 try
@@ -44,7 +47,7 @@ namespace PcTemp
                 catch (Win32Exception ex)
                 {
                     if (ex.NativeErrorCode != 1223)
-                        MessageBox.Show("PcTemp necesita permisos de administrador para funcionar:\n" + ex.Message,
+                        PcTempMessageBox.Show("PcTemp necesita permisos de administrador para funcionar:\n" + ex.Message,
                             "PcTemp", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 }
                 return;
@@ -57,7 +60,8 @@ namespace PcTemp
                 {
                     TemperatureSnapshot test = reader.Read();
                     using (DashboardForm form = new DashboardForm(null, null, null))
-                        form.UpdateValues(test, 5, false, IsCurrentProcessAdministrator(), SensorAccess.IsPawnIoInstalled());
+                        form.UpdateValues(test, 5, false, IsCurrentProcessAdministrator(),
+                            SensorAccess.IsPawnIoInstalled(), SensorAccess.IsPawnIoRestartPending());
                     Environment.ExitCode = (test.Cpu.HasValue ? 0 : 1) |
                                            (test.Gpu.HasValue ? 0 : 2) |
                                            (test.Board.HasValue ? 0 : 4);
@@ -98,7 +102,7 @@ namespace PcTemp
                         }
                         catch
                         {
-                            MessageBox.Show("PcTemp ya se está ejecutando.", "PcTemp",
+                            PcTempMessageBox.Show("PcTemp ya se está ejecutando.", "PcTemp",
                                 MessageBoxButtons.OK, MessageBoxIcon.Information);
                         }
                         return;
@@ -106,13 +110,11 @@ namespace PcTemp
 
                     using (EventWaitHandle showEvent = new EventWaitHandle(false, EventResetMode.AutoReset, ShowEventName))
                     {
-                        Application.EnableVisualStyles();
-                        Application.SetCompatibleTextRenderingDefault(false);
                         Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
                         Application.ThreadException += delegate(object sender, ThreadExceptionEventArgs e)
                         {
                             CrashReporter.Report(e.Exception, "Interfaz", "Excepción no controlada", null);
-                            MessageBox.Show("PcTemp ha detectado un fallo inesperado. Si autorizaste los informes, se enviará una traza técnica anónima.\n\n" +
+                            PcTempMessageBox.Show("PcTemp ha detectado un fallo inesperado. Si autorizaste los informes, se enviará una traza técnica anónima.\n\n" +
                                 e.Exception.Message, "PcTemp", MessageBoxButtons.OK, MessageBoxIcon.Error);
                         };
                         AppDomain.CurrentDomain.UnhandledException += delegate(object sender, UnhandledExceptionEventArgs e)
@@ -135,6 +137,246 @@ namespace PcTemp
         {
             using (WindowsIdentity identity = WindowsIdentity.GetCurrent())
                 return new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator);
+        }
+    }
+
+    internal static class PcTempTheme
+    {
+        internal static bool IsDark
+        {
+            get
+            {
+                try
+                {
+                    using (RegistryKey key = Registry.CurrentUser.OpenSubKey(@"Software\PcTemp"))
+                    {
+                        object value = key == null ? null : key.GetValue("DarkTheme");
+                        if (value != null)
+                            return Convert.ToInt32(value, CultureInfo.InvariantCulture) != 0;
+
+                        object legacyMode = key == null ? null : key.GetValue("ThemeMode");
+                        return legacyMode == null || Convert.ToInt32(legacyMode, CultureInfo.InvariantCulture) != 0;
+                    }
+                }
+                catch { return true; }
+            }
+        }
+    }
+
+    internal static class PcTempMessageBox
+    {
+        internal static DialogResult Show(string message, string caption,
+            MessageBoxButtons buttons, MessageBoxIcon icon)
+        {
+            return Show(null, message, caption, buttons, icon);
+        }
+
+        internal static DialogResult Show(IWin32Window owner, string message, string caption,
+            MessageBoxButtons buttons, MessageBoxIcon icon)
+        {
+            using (PcTempMessageDialog dialog = new PcTempMessageDialog(message, caption, buttons, icon,
+                PcTempTheme.IsDark))
+                return owner == null ? dialog.ShowDialog() : dialog.ShowDialog(owner);
+        }
+    }
+
+    internal sealed class PcTempMessageDialog : Form
+    {
+        private readonly bool _darkTheme;
+
+        [DllImport("dwmapi.dll")]
+        private static extern int DwmSetWindowAttribute(IntPtr window, int attribute, ref int value, int size);
+
+        internal PcTempMessageDialog(string message, string caption, MessageBoxButtons buttons,
+            MessageBoxIcon icon, bool darkTheme)
+        {
+            _darkTheme = darkTheme;
+            Color window = darkTheme ? Color.FromArgb(38, 40, 45) : Color.FromArgb(229, 233, 239);
+            Color surface = darkTheme ? Color.FromArgb(27, 29, 34) : Color.White;
+            Color primary = darkTheme ? Color.FromArgb(245, 246, 248) : Color.FromArgb(25, 28, 34);
+            Color border = darkTheme ? Color.FromArgb(60, 64, 72) : Color.FromArgb(203, 210, 220);
+
+            Text = string.IsNullOrWhiteSpace(caption) ? "PcTemp" : caption;
+            FormBorderStyle = FormBorderStyle.FixedDialog;
+            MaximizeBox = false;
+            MinimizeBox = false;
+            ShowInTaskbar = false;
+            StartPosition = FormStartPosition.CenterParent;
+            BackColor = window;
+            ForeColor = primary;
+            Font = new Font("Segoe UI", 9F);
+            Padding = new Padding(0);
+            try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
+
+            Size measured = TextRenderer.MeasureText(message ?? "", Font, new Size(440, 360),
+                TextFormatFlags.WordBreak | TextFormatFlags.TextBoxControl);
+            int messageHeight = Math.Max(66, Math.Min(330, measured.Height + 12));
+            ClientSize = new Size(560, messageHeight + 90);
+
+            Panel content = new Panel
+            {
+                Dock = DockStyle.Top,
+                Height = ClientSize.Height - 62,
+                BackColor = surface,
+                Padding = new Padding(24, 22, 24, 14)
+            };
+            Controls.Add(content);
+
+            PictureBox iconView = new PictureBox
+            {
+                Location = new Point(24, 24),
+                Size = new Size(42, 42),
+                SizeMode = PictureBoxSizeMode.Zoom,
+                TabStop = false,
+                BackColor = Color.Transparent,
+                Image = CreateDialogImage(icon)
+            };
+            content.Controls.Add(iconView);
+
+            Label messageLabel = new Label
+            {
+                AutoSize = false,
+                Location = new Point(84, 22),
+                Size = new Size(452, messageHeight),
+                Text = message ?? "",
+                ForeColor = primary,
+                BackColor = Color.Transparent,
+                Font = new Font("Segoe UI", 9.5F),
+                TextAlign = ContentAlignment.TopLeft
+            };
+            content.Controls.Add(messageLabel);
+
+            Panel actions = new Panel
+            {
+                Dock = DockStyle.Bottom,
+                Height = 62,
+                BackColor = window,
+                Padding = new Padding(14)
+            };
+            Controls.Add(actions);
+            actions.BringToFront();
+
+            List<Button> dialogButtons = CreateButtons(buttons, darkTheme, border);
+            int right = ClientSize.Width - 18;
+            for (int index = dialogButtons.Count - 1; index >= 0; index--)
+            {
+                Button button = dialogButtons[index];
+                right -= button.Width;
+                button.Location = new Point(right, 13);
+                actions.Controls.Add(button);
+                right -= 10;
+            }
+
+            if (dialogButtons.Count > 0)
+                AcceptButton = dialogButtons[0];
+            Button cancel = dialogButtons.FirstOrDefault(x => x.DialogResult == DialogResult.Cancel ||
+                x.DialogResult == DialogResult.No);
+            if (cancel != null) CancelButton = cancel;
+        }
+
+        protected override void OnHandleCreated(EventArgs e)
+        {
+            base.OnHandleCreated(e);
+            ApplyTitleBarTheme();
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                foreach (PictureBox picture in Controls.OfType<Panel>().SelectMany(x => x.Controls.OfType<PictureBox>()))
+                {
+                    if (picture.Image != null) picture.Image.Dispose();
+                }
+            }
+            base.Dispose(disposing);
+        }
+
+        private List<Button> CreateButtons(MessageBoxButtons buttons, bool darkTheme, Color border)
+        {
+            List<Button> result = new List<Button>();
+            if (buttons == MessageBoxButtons.YesNo || buttons == MessageBoxButtons.YesNoCancel)
+            {
+                result.Add(CreateDialogButton("Sí", DialogResult.Yes, true, darkTheme, border));
+                result.Add(CreateDialogButton("No", DialogResult.No, false, darkTheme, border));
+                if (buttons == MessageBoxButtons.YesNoCancel)
+                    result.Add(CreateDialogButton("Cancelar", DialogResult.Cancel, false, darkTheme, border));
+            }
+            else if (buttons == MessageBoxButtons.OKCancel || buttons == MessageBoxButtons.RetryCancel)
+            {
+                string mainText = buttons == MessageBoxButtons.RetryCancel ? "Reintentar" : "Aceptar";
+                DialogResult mainResult = buttons == MessageBoxButtons.RetryCancel ? DialogResult.Retry : DialogResult.OK;
+                result.Add(CreateDialogButton(mainText, mainResult, true, darkTheme, border));
+                result.Add(CreateDialogButton("Cancelar", DialogResult.Cancel, false, darkTheme, border));
+            }
+            else if (buttons == MessageBoxButtons.AbortRetryIgnore)
+            {
+                result.Add(CreateDialogButton("Anular", DialogResult.Abort, true, darkTheme, border));
+                result.Add(CreateDialogButton("Reintentar", DialogResult.Retry, false, darkTheme, border));
+                result.Add(CreateDialogButton("Omitir", DialogResult.Ignore, false, darkTheme, border));
+            }
+            else
+            {
+                result.Add(CreateDialogButton("Aceptar", DialogResult.OK, true, darkTheme, border));
+            }
+            return result;
+        }
+
+        private static Button CreateDialogButton(string text, DialogResult result, bool primary,
+            bool darkTheme, Color border)
+        {
+            Color neutral = darkTheme ? Color.FromArgb(45, 48, 54) : Color.White;
+            Button button = new Button
+            {
+                Text = text,
+                DialogResult = result,
+                Size = new Size(112, 36),
+                FlatStyle = FlatStyle.Flat,
+                BackColor = primary ? Color.FromArgb(0, 145, 215) : neutral,
+                ForeColor = primary || darkTheme ? Color.White : Color.FromArgb(25, 28, 34),
+                Font = new Font("Segoe UI Semibold", 9F),
+                Cursor = Cursors.Hand,
+                TabStop = true
+            };
+            button.FlatAppearance.BorderColor = primary ? Color.FromArgb(0, 173, 239) : border;
+            button.FlatAppearance.BorderSize = 1;
+            button.FlatAppearance.MouseOverBackColor = primary
+                ? Color.FromArgb(0, 163, 232)
+                : (darkTheme ? Color.FromArgb(56, 59, 66) : Color.FromArgb(242, 244, 247));
+            return button;
+        }
+
+        private static Image CreateDialogImage(MessageBoxIcon icon)
+        {
+            Icon source;
+            if (icon == MessageBoxIcon.Error) source = SystemIcons.Error;
+            else if (icon == MessageBoxIcon.Warning) source = SystemIcons.Warning;
+            else if (icon == MessageBoxIcon.Question) source = SystemIcons.Question;
+            else source = SystemIcons.Information;
+            return source.ToBitmap();
+        }
+
+        private void ApplyTitleBarTheme()
+        {
+            try
+            {
+                int enabled = _darkTheme ? 1 : 0;
+                if (DwmSetWindowAttribute(Handle, 20, ref enabled, sizeof(int)) != 0)
+                    DwmSetWindowAttribute(Handle, 19, ref enabled, sizeof(int));
+
+                int caption = ToColorRef(_darkTheme ? Color.FromArgb(27, 29, 34) : Color.FromArgb(229, 233, 239));
+                int captionText = ToColorRef(_darkTheme ? Color.White : Color.FromArgb(25, 28, 34));
+                int border = ToColorRef(_darkTheme ? Color.FromArgb(60, 64, 72) : Color.FromArgb(203, 210, 220));
+                DwmSetWindowAttribute(Handle, 35, ref caption, sizeof(int));
+                DwmSetWindowAttribute(Handle, 36, ref captionText, sizeof(int));
+                DwmSetWindowAttribute(Handle, 34, ref border, sizeof(int));
+            }
+            catch { }
+        }
+
+        private static int ToColorRef(Color color)
+        {
+            return color.R | (color.G << 8) | (color.B << 16);
         }
     }
 
@@ -1307,6 +1549,7 @@ namespace PcTemp
         private readonly DashboardForm _dashboard;
         private readonly bool _isAdministrator;
         private readonly bool _isPawnIoInstalled;
+        private readonly bool _pawnIoRestartRequired;
         private TemperatureSnapshot _snapshot = new TemperatureSnapshot();
         private int _intervalSeconds;
         private string _boardSensorSelection;
@@ -1322,7 +1565,8 @@ namespace PcTemp
             _showEvent = showEvent;
             _startupLaunch = startupLaunch;
             _isAdministrator = IsAdministrator();
-            _isPawnIoInstalled = SensorAccess.IsPawnIoInstalled();
+            _pawnIoRestartRequired = SensorAccess.IsPawnIoRestartPending();
+            _isPawnIoInstalled = _pawnIoRestartRequired || SensorAccess.IsPawnIoInstalled();
             MigrateLegacySettings();
             _intervalSeconds = LoadInterval();
             _boardSensorSelection = LoadBoardSensorSelection();
@@ -1527,7 +1771,8 @@ namespace PcTemp
                 _gpuStatus.Enabled = _snapshot.Gpu.HasValue;
                 _gpuIcon.Visible = _trayReady && _snapshot.Gpu.HasValue &&
                     IsTraySelectionEnabled("gpu", true);
-                _dashboard.UpdateValues(_snapshot, _intervalSeconds, _startupEnabled, _isAdministrator, _isPawnIoInstalled);
+                _dashboard.UpdateValues(_snapshot, _intervalSeconds, _startupEnabled, _isAdministrator,
+                    _isPawnIoInstalled, _pawnIoRestartRequired);
             }
             else
             {
@@ -1914,7 +2159,8 @@ namespace PcTemp
             using (RegistryKey key = Registry.CurrentUser.CreateSubKey(SettingsKey))
                 key.SetValue("IntervalSeconds", seconds, RegistryValueKind.DWord);
             UpdateIntervalChecks();
-            _dashboard.UpdateValues(_snapshot, _intervalSeconds, _startupEnabled, _isAdministrator, _isPawnIoInstalled);
+            _dashboard.UpdateValues(_snapshot, _intervalSeconds, _startupEnabled, _isAdministrator,
+                _isPawnIoInstalled, _pawnIoRestartRequired);
         }
 
         private void UpdateIntervalChecks()
@@ -1973,12 +2219,13 @@ namespace PcTemp
                 SetStartup(_startupItem.Checked);
                 _startupEnabled = IsStartupEnabled();
                 _startupItem.Checked = _startupEnabled;
-                _dashboard.UpdateValues(_snapshot, _intervalSeconds, _startupEnabled, _isAdministrator, _isPawnIoInstalled);
+                _dashboard.UpdateValues(_snapshot, _intervalSeconds, _startupEnabled, _isAdministrator,
+                    _isPawnIoInstalled, _pawnIoRestartRequired);
             }
             catch (Exception ex)
             {
                 _startupItem.Checked = !_startupItem.Checked;
-                MessageBox.Show("No se pudo cambiar el inicio con Windows:\n" + ex.Message,
+                PcTempMessageBox.Show("No se pudo cambiar el inicio con Windows:\n" + ex.Message,
                     "PcTemp", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             }
         }
@@ -1991,16 +2238,16 @@ namespace PcTemp
                 _startupEnabled = IsStartupEnabled();
                 _startupItem.Checked = _startupEnabled;
                 _dashboard.UpdateValues(_snapshot, _intervalSeconds, _startupEnabled,
-                    _isAdministrator, _isPawnIoInstalled);
+                    _isAdministrator, _isPawnIoInstalled, _pawnIoRestartRequired);
             }
             catch (Exception ex)
             {
                 _startupEnabled = IsStartupEnabled();
                 _startupItem.Checked = _startupEnabled;
-                MessageBox.Show("No se pudo cambiar el inicio con Windows:\n" + ex.Message,
+                PcTempMessageBox.Show("No se pudo cambiar el inicio con Windows:\n" + ex.Message,
                     "PcTemp", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 _dashboard.UpdateValues(_snapshot, _intervalSeconds, _startupEnabled,
-                    _isAdministrator, _isPawnIoInstalled);
+                    _isAdministrator, _isPawnIoInstalled, _pawnIoRestartRequired);
             }
         }
 
@@ -2089,7 +2336,7 @@ namespace PcTemp
             catch (Win32Exception ex)
             {
                 if (ex.NativeErrorCode != 1223)
-                    MessageBox.Show("No se pudo reiniciar PcTemp como administrador:\n" + ex.Message,
+                    PcTempMessageBox.Show("No se pudo reiniciar PcTemp como administrador:\n" + ex.Message,
                         "PcTemp", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             }
         }
@@ -2099,12 +2346,12 @@ namespace PcTemp
             string installer = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "PawnIO_setup.exe");
             if (!File.Exists(installer))
             {
-                MessageBox.Show("No se encuentra PawnIO_setup.exe junto a PcTemp.", "PcTemp",
+                PcTempMessageBox.Show("No se encuentra PawnIO_setup.exe junto a PcTemp.", "PcTemp",
                     MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
 
-            DialogResult answer = MessageBox.Show(
+            DialogResult answer = PcTempMessageBox.Show(
                 "PcTemp necesita el controlador firmado PawnIO para leer los sensores de bajo nivel de tu CPU y placa base.\n\n" +
                 "Se abrirá el instalador oficial 2.2.0 y Windows pedirá permiso de administrador. ¿Continuar?",
                 "Instalar acceso a sensores", MessageBoxButtons.YesNo, MessageBoxIcon.Information);
@@ -2121,7 +2368,7 @@ namespace PcTemp
             catch (Win32Exception ex)
             {
                 if (ex.NativeErrorCode != 1223)
-                    MessageBox.Show("No se pudo abrir el instalador de PawnIO:\n" + ex.Message,
+                    PcTempMessageBox.Show("No se pudo abrir el instalador de PawnIO:\n" + ex.Message,
                         "PcTemp", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             }
         }
@@ -2136,7 +2383,7 @@ namespace PcTemp
             }
             catch (Exception ex)
             {
-                MessageBox.Show("No se pudo abrir la configuración de la barra de tareas:\n" + ex.Message,
+                PcTempMessageBox.Show("No se pudo abrir la configuración de la barra de tareas:\n" + ex.Message,
                     "PcTemp", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             }
         }
@@ -2173,7 +2420,8 @@ namespace PcTemp
 
         private void ShowDashboard()
         {
-            _dashboard.UpdateValues(_snapshot, _intervalSeconds, _startupEnabled, _isAdministrator, _isPawnIoInstalled);
+            _dashboard.UpdateValues(_snapshot, _intervalSeconds, _startupEnabled, _isAdministrator,
+                _isPawnIoInstalled, _pawnIoRestartRequired);
             _dashboard.WindowState = FormWindowState.Normal;
             _dashboard.OptimizeWindowSize();
             _dashboard.Show();
@@ -2232,6 +2480,74 @@ namespace PcTemp
 
     internal static class SensorAccess
     {
+        private const string PawnIoRepairTaskName = "PcTemp_PawnIO_Repair";
+        private const string PcTempUninstallKey = @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\PcTemp";
+
+        public static bool IsPawnIoRestartPending()
+        {
+            // Si el controlador ya está ejecutándose, cualquier marca antigua de
+            // reinicio pendiente deja de ser relevante.
+            if (IsPawnIoServiceRunning()) return false;
+
+            try
+            {
+                using (RegistryKey key = Registry.LocalMachine.OpenSubKey(PcTempUninstallKey))
+                {
+                    object pending = key == null ? null : key.GetValue("PawnIoRestartPending");
+                    if (pending != null)
+                        return Convert.ToInt32(pending, CultureInfo.InvariantCulture) != 0;
+                }
+            }
+            catch { }
+
+            // Compatibilidad con instalaciones anteriores: el instalador crea esta
+            // tarea cuando Windows mantiene el servicio marcado para eliminar.
+            try
+            {
+                dynamic service = Activator.CreateInstance(Type.GetTypeFromProgID("Schedule.Service"));
+                service.Connect();
+                dynamic folder = service.GetFolder("\\");
+                dynamic task = folder.GetTask(PawnIoRepairTaskName);
+                if (task != null) return true;
+            }
+            catch { }
+
+            try
+            {
+                using (RegistryKey sessionManager = Registry.LocalMachine.OpenSubKey(
+                    @"SYSTEM\CurrentControlSet\Control\Session Manager"))
+                {
+                    string[] pendingOperations = sessionManager == null
+                        ? null
+                        : sessionManager.GetValue("PendingFileRenameOperations") as string[];
+                    if (pendingOperations != null && pendingOperations.Any(delegate(string item)
+                    {
+                        return !string.IsNullOrWhiteSpace(item) &&
+                            item.IndexOf("PawnIO", StringComparison.OrdinalIgnoreCase) >= 0;
+                    })) return true;
+                }
+            }
+            catch { }
+            return false;
+        }
+
+        private static bool IsPawnIoServiceRunning()
+        {
+            try
+            {
+                using (ManagementObjectSearcher searcher = new ManagementObjectSearcher(
+                    "SELECT State FROM Win32_SystemDriver WHERE Name='PawnIO'"))
+                using (ManagementObjectCollection drivers = searcher.Get())
+                {
+                    foreach (ManagementObject driver in drivers)
+                        return string.Equals(Convert.ToString(driver["State"]), "Running",
+                            StringComparison.OrdinalIgnoreCase);
+                }
+            }
+            catch { }
+            return false;
+        }
+
         public static bool IsPawnIoInstalled()
         {
             string driver = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "System32", "drivers", "PawnIO.sys");
@@ -4303,7 +4619,16 @@ namespace PcTemp
             _driverButton = CreateButton("Instalar acceso a sensores", 24, 345, 180);
             _driverButton.BackColor = Color.FromArgb(196, 116, 0);
             _driverButton.Visible = false;
-            _driverButton.Click += delegate { if (installSensorDriver != null) installSensorDriver(); };
+            _driverButton.Click += delegate
+            {
+                if (string.Equals(Convert.ToString(_driverButton.Tag), "restart", StringComparison.Ordinal))
+                {
+                    PcTempMessageBox.Show(this, "PawnIO ya está preparado, pero Windows necesita reiniciarse antes de activar los sensores de CPU y placa base.",
+                        "Reinicio pendiente", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    return;
+                }
+                if (installSensorDriver != null) installSensorDriver();
+            };
             _contentPanel.Controls.Add(_driverButton);
 
             _elevateButton = CreateButton("Reiniciar como administrador", 216, 345, 180);
@@ -4496,18 +4821,7 @@ namespace PcTemp
 
         private static bool LoadDarkTheme()
         {
-            try
-            {
-                using (RegistryKey key = Registry.CurrentUser.OpenSubKey(@"Software\PcTemp"))
-                {
-                    object value = key == null ? null : key.GetValue("DarkTheme");
-                    if (value != null)
-                        return Convert.ToInt32(value, CultureInfo.InvariantCulture) != 0;
-                    object legacyMode = key == null ? null : key.GetValue("ThemeMode");
-                    return legacyMode == null || Convert.ToInt32(legacyMode, CultureInfo.InvariantCulture) != 0;
-                }
-            }
-            catch { return true; }
+            return PcTempTheme.IsDark;
         }
 
         private static void SaveDarkTheme(bool darkTheme)
@@ -5619,7 +5933,8 @@ namespace PcTemp
             ApplyMenuTheme(_boardSensorMenuItem.DropDownItems, menuBackground, text);
         }
 
-        public void UpdateValues(TemperatureSnapshot snapshot, int seconds, bool startup, bool isAdministrator, bool isPawnIoInstalled)
+        public void UpdateValues(TemperatureSnapshot snapshot, int seconds, bool startup, bool isAdministrator,
+            bool isPawnIoInstalled, bool pawnIoRestartRequired)
         {
             Panel gpuCard = _gpuTitle.Parent as Panel;
             bool gpuVisibilityChanged = _gpuAvailable != snapshot.Gpu.HasValue;
@@ -5663,10 +5978,20 @@ namespace PcTemp
                 ApplyAdaptiveWindowSize();
             }
             bool lowLevelMissing = !snapshot.Cpu.HasValue || !snapshot.Board.HasValue;
-            bool showDriver = lowLevelMissing && !isPawnIoInstalled;
-            bool showElevate = lowLevelMissing && isPawnIoInstalled && !isAdministrator;
-            bool actionVisibilityChanged = _driverButton.Visible != showDriver || _elevateButton.Visible != showElevate;
-            _driverButton.Visible = showDriver;
+            bool showRestartNotice = lowLevelMissing && pawnIoRestartRequired;
+            bool showDriver = lowLevelMissing && !isPawnIoInstalled && !showRestartNotice;
+            bool showElevate = lowLevelMissing && isPawnIoInstalled && !pawnIoRestartRequired && !isAdministrator;
+            bool showDriverAction = showDriver || showRestartNotice;
+            bool actionVisibilityChanged = _driverButton.Visible != showDriverAction ||
+                _elevateButton.Visible != showElevate;
+            SetTextIfChanged(_driverButton, showRestartNotice
+                ? "Reinicia Windows para activar los sensores"
+                : "Instalar acceso a sensores");
+            _driverButton.Tag = showRestartNotice ? "restart" : null;
+            _driverButton.BackColor = showRestartNotice
+                ? Color.FromArgb(172, 104, 0)
+                : Color.FromArgb(196, 116, 0);
+            _driverButton.Visible = showDriverAction;
             _elevateButton.Visible = showElevate;
             if (actionVisibilityChanged) ReflowLayout();
             if (_startupMenuItem.Checked != startup)

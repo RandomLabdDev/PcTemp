@@ -37,6 +37,14 @@ Descarga el instalador desde **GitHub Releases**, ejecútalo y pulsa **Instalar 
 - instala o repara PawnIO 2.2.0 silenciosamente cuando sea necesario;
 - permite autorizar informes anónimos de fallos para ayudar a mejorar PcTemp.
 
+### Asistente de instalación
+
+![Opciones del instalador de PcTemp](docs/images/installer-options.png)
+
+Al finalizar, el instalador confirma que PcTemp y el acceso a sensores quedaron preparados:
+
+![Instalación de PcTemp completada](docs/images/installer-complete.png)
+
 Una actualización conserva las preferencias del usuario. La desinstalación elimina los archivos, accesos, tareas, configuración y registro creados por PcTemp. PawnIO solo se retira si el instalador registró que fue incorporado por PcTemp; una instalación previa independiente se conserva.
 
 ## Uso

@@ -1,6 +1,7 @@
 using System;
 using System.Diagnostics;
 using System.Drawing;
+using System.Drawing.Drawing2D;
 using System.Globalization;
 using System.IO;
 using System.IO.Compression;
@@ -16,15 +17,15 @@ using Microsoft.Win32;
 [assembly: AssemblyTitle("PcTemp Setup")]
 [assembly: AssemblyProduct("PcTemp")]
 [assembly: AssemblyCompany("PcTemp")]
-[assembly: AssemblyVersion("1.13.63.0")]
-[assembly: AssemblyFileVersion("1.13.63.0")]
+[assembly: AssemblyVersion("1.13.65.0")]
+[assembly: AssemblyFileVersion("1.13.65.0")]
 
 namespace PcTempInstaller
 {
     internal static class Program
     {
         private const string ProductName = "PcTemp";
-        internal const string Version = "1.13.63";
+        internal const string Version = "1.13.65";
         private const string TaskName = "PcTemp";
         private const string LegacyTaskName = "PcTemp_Startup";
         private const string PawnIoRepairTaskName = "PcTemp_PawnIO_Repair";
@@ -32,6 +33,7 @@ namespace PcTempInstaller
         private const string SettingsKey = @"Software\PcTemp";
         private const string InstallMarkerFile = ".pctemp-install";
         private const string PawnIoManagedValue = "PawnIoManagedByPcTemp";
+        private const string PawnIoRestartPendingValue = "PawnIoRestartPending";
         private const string PawnIoSha256 = "1F519A22E47187F70A1379A48CA604981C4FCF694F4E65B734AAA74A9FBA3032";
 
         [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
@@ -168,7 +170,7 @@ namespace PcTempInstaller
             CreateShortcuts(target, installedSetup, createDesktopShortcut);
             CreateStartupTask(Path.Combine(target, "PcTemp.exe"));
             SaveErrorReportConsent(sendErrorReports);
-            RegisterUninstaller(target, installedSetup, pawnIoManaged);
+            RegisterUninstaller(target, installedSetup, pawnIoManaged, rebootRequired);
             RemovePreviousInstallation(previousTarget, target);
 
             if (!rebootRequired)
@@ -265,8 +267,9 @@ namespace PcTempInstaller
 
                 bool installedByPcTemp;
                 bool repairPending;
-                InstallPawnIo(target, out installedByPcTemp, out repairPending);
-                if (!repairPending) DeletePawnIoRepairTask();
+                bool rebootRequired = InstallPawnIo(target, out installedByPcTemp, out repairPending);
+                SetPawnIoRestartPending(repairPending || rebootRequired);
+                if (!repairPending && !rebootRequired) DeletePawnIoRepairTask();
             }
             catch
             {
@@ -334,17 +337,61 @@ namespace PcTempInstaller
             }
         }
 
+        internal static bool UseDarkTheme
+        {
+            get
+            {
+                try
+                {
+                    using (RegistryKey key = Registry.CurrentUser.OpenSubKey(
+                        @"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"))
+                    {
+                        object value = key == null ? null : key.GetValue("AppsUseLightTheme");
+                        return value != null && Convert.ToInt32(value, CultureInfo.InvariantCulture) == 0;
+                    }
+                }
+                catch { return false; }
+            }
+        }
+
+        internal static Color WindowBackColor
+        {
+            get { return UseDarkTheme ? Color.FromArgb(24, 24, 27) : Color.FromArgb(245, 246, 248); }
+        }
+
+        internal static Color WindowForeColor
+        {
+            get { return UseDarkTheme ? Color.White : Color.FromArgb(24, 24, 27); }
+        }
+
+        internal static Color SecondaryForeColor
+        {
+            get { return UseDarkTheme ? Color.DarkGray : Color.FromArgb(82, 82, 91); }
+        }
+
+        internal static Color InputBackColor
+        {
+            get { return UseDarkTheme ? Color.FromArgb(38, 39, 44) : Color.White; }
+        }
+
+        internal static Color ButtonBackColor
+        {
+            get { return UseDarkTheme ? Color.FromArgb(55, 57, 64) : Color.FromArgb(229, 231, 235); }
+        }
+
         internal static void ApplyDarkTitleBar(IntPtr handle)
         {
             if (handle == IntPtr.Zero || Environment.OSVersion.Version.Major < 10) return;
-            int enabled = 1;
+            int enabled = UseDarkTheme ? 1 : 0;
             try
             {
                 if (DwmSetWindowAttribute(handle, 20, ref enabled, sizeof(int)) != 0)
                     DwmSetWindowAttribute(handle, 19, ref enabled, sizeof(int));
-                int caption = ColorTranslator.ToWin32(Color.FromArgb(24, 24, 27));
-                int text = ColorTranslator.ToWin32(Color.White);
-                int border = ColorTranslator.ToWin32(Color.FromArgb(55, 57, 64));
+                int caption = ColorTranslator.ToWin32(WindowBackColor);
+                int text = ColorTranslator.ToWin32(WindowForeColor);
+                int border = ColorTranslator.ToWin32(UseDarkTheme
+                    ? Color.FromArgb(55, 57, 64)
+                    : Color.FromArgb(209, 213, 219));
                 DwmSetWindowAttribute(handle, 35, ref caption, sizeof(int));
                 DwmSetWindowAttribute(handle, 36, ref text, sizeof(int));
                 DwmSetWindowAttribute(handle, 34, ref border, sizeof(int));
@@ -606,7 +653,8 @@ namespace PcTempInstaller
             catch { return false; }
         }
 
-        private static void RegisterUninstaller(string target, string setupPath, bool pawnIoManaged)
+        private static void RegisterUninstaller(string target, string setupPath, bool pawnIoManaged,
+            bool pawnIoRestartPending)
         {
             using (RegistryKey key = Registry.LocalMachine.CreateSubKey(UninstallKey))
             {
@@ -619,14 +667,25 @@ namespace PcTempInstaller
                 key.SetValue("ModifyPath", "\"" + setupPath + "\"");
                 key.SetValue("EstimatedSize", 12000, RegistryValueKind.DWord);
                 key.SetValue(PawnIoManagedValue, pawnIoManaged ? 1 : 0, RegistryValueKind.DWord);
+                key.SetValue(PawnIoRestartPendingValue, pawnIoRestartPending ? 1 : 0, RegistryValueKind.DWord);
             }
         }
 
-        internal static bool BeginUninstall()
+        private static void SetPawnIoRestartPending(bool pending)
+        {
+            try
+            {
+                using (RegistryKey key = Registry.LocalMachine.CreateSubKey(UninstallKey))
+                    key.SetValue(PawnIoRestartPendingValue, pending ? 1 : 0, RegistryValueKind.DWord);
+            }
+            catch { }
+        }
+
+        internal static bool BeginUninstall(IWin32Window owner = null)
         {
             string target = RegisteredInstallDirectory ?? Path.GetDirectoryName(Application.ExecutablePath);
             bool removePawnIo = ShouldRemovePawnIo(target);
-            DialogResult answer = MessageBox.Show(
+            DialogResult answer = ThemedMessageBox.Show(owner,
                 "¿Quieres desinstalar completamente PcTemp?\n\n" +
                 (removePawnIo
                     ? "También se eliminará PawnIO 2.2.0 porque fue instalado y administrado por PcTemp. "
@@ -655,7 +714,7 @@ namespace PcTempInstaller
             string target = Path.GetFullPath(requestedTarget).TrimEnd(Path.DirectorySeparatorChar);
             if (!string.Equals(expected, target, StringComparison.OrdinalIgnoreCase))
             {
-                MessageBox.Show("La ruta de desinstalación no es válida.", ProductName, MessageBoxButtons.OK, MessageBoxIcon.Error);
+                ThemedMessageBox.Show(null, "La ruta de desinstalación no es válida.", ProductName, MessageBoxButtons.OK, MessageBoxIcon.Error);
                 return;
             }
 
@@ -678,7 +737,7 @@ namespace PcTempInstaller
                 StartSelfDeleteHelper();
                 if (pawnIoError != null)
                 {
-                    MessageBox.Show("PcTemp se ha eliminado, pero Windows no permitió retirar completamente PawnIO:\n" +
+                    ThemedMessageBox.Show(null, "PcTemp se ha eliminado, pero Windows no permitió retirar completamente PawnIO:\n" +
                         pawnIoError.Message + "\n\nReinicia Windows y vuelve a ejecutar el instalador si deseas repetir la limpieza.",
                         ProductName, MessageBoxButtons.OK, MessageBoxIcon.Warning);
                     return;
@@ -690,11 +749,11 @@ namespace PcTempInstaller
                     : "PcTemp se ha eliminado completamente. PawnIO se ha conservado porque ya existía de forma independiente.";
                 if (appCleanupRebootRequired)
                     message += " Reinicia Windows para terminar de borrar archivos que estaban en uso.";
-                MessageBox.Show(message, ProductName, MessageBoxButtons.OK, MessageBoxIcon.Information);
+                ThemedMessageBox.Show(null, message, ProductName, MessageBoxButtons.OK, MessageBoxIcon.Information);
             }
             catch (Exception ex)
             {
-                MessageBox.Show("No se pudo completar la desinstalación:\n" + ex.Message, ProductName, MessageBoxButtons.OK, MessageBoxIcon.Error);
+                ThemedMessageBox.Show(null, "No se pudo completar la desinstalación:\n" + ex.Message, ProductName, MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
 
@@ -1029,6 +1088,188 @@ namespace PcTempInstaller
         }
     }
 
+    internal static class ThemedMessageBox
+    {
+        internal static DialogResult Show(IWin32Window owner, string message, string caption,
+            MessageBoxButtons buttons, MessageBoxIcon icon)
+        {
+            using (ThemedMessageDialog dialog = new ThemedMessageDialog(message, caption, buttons, icon))
+                return owner == null ? dialog.ShowDialog() : dialog.ShowDialog(owner);
+        }
+
+        private sealed class ThemedMessageDialog : Form
+        {
+            internal ThemedMessageDialog(string message, string caption, MessageBoxButtons buttons, MessageBoxIcon icon)
+            {
+                Text = caption;
+                ClientSize = new Size(500, 220);
+                FormBorderStyle = FormBorderStyle.FixedDialog;
+                MaximizeBox = false;
+                MinimizeBox = false;
+                ShowInTaskbar = false;
+                StartPosition = FormStartPosition.CenterParent;
+                BackColor = Program.WindowBackColor;
+                ForeColor = Program.WindowForeColor;
+                Font = new Font("Segoe UI", 9F);
+
+                PictureBox image = new PictureBox
+                {
+                    Image = GetDialogIcon(icon).ToBitmap(),
+                    Location = new Point(24, 28),
+                    Size = new Size(40, 40),
+                    SizeMode = PictureBoxSizeMode.StretchImage
+                };
+                Controls.Add(image);
+
+                Label text = new Label
+                {
+                    Text = message,
+                    Location = new Point(82, 24),
+                    Size = new Size(390, 130),
+                    ForeColor = Program.WindowForeColor,
+                    BackColor = Program.WindowBackColor
+                };
+                Controls.Add(text);
+
+                FlowLayoutPanel actions = new FlowLayoutPanel
+                {
+                    Dock = DockStyle.Bottom,
+                    Height = 58,
+                    FlowDirection = FlowDirection.RightToLeft,
+                    Padding = new Padding(12, 11, 12, 10),
+                    BackColor = Program.UseDarkTheme
+                        ? Color.FromArgb(31, 31, 35)
+                        : Color.FromArgb(235, 237, 240)
+                };
+                Controls.Add(actions);
+
+                if (buttons == MessageBoxButtons.YesNo)
+                {
+                    Button yes = CreateButton("Sí", DialogResult.Yes);
+                    Button no = CreateButton("No", DialogResult.No);
+                    actions.Controls.Add(yes);
+                    actions.Controls.Add(no);
+                    AcceptButton = yes;
+                    CancelButton = no;
+                }
+                else
+                {
+                    Button ok = CreateButton("Aceptar", DialogResult.OK);
+                    actions.Controls.Add(ok);
+                    AcceptButton = ok;
+                    CancelButton = ok;
+                }
+            }
+
+            protected override void OnHandleCreated(EventArgs e)
+            {
+                base.OnHandleCreated(e);
+                Program.ApplyDarkTitleBar(Handle);
+            }
+
+            private static Button CreateButton(string text, DialogResult result)
+            {
+                return new Button
+                {
+                    Text = text,
+                    DialogResult = result,
+                    Size = new Size(105, 34),
+                    Margin = new Padding(8, 0, 0, 0),
+                    FlatStyle = FlatStyle.Flat,
+                    BackColor = Program.ButtonBackColor,
+                    ForeColor = Program.WindowForeColor,
+                    UseVisualStyleBackColor = false,
+                    Cursor = Cursors.Hand
+                };
+            }
+
+            private static Icon GetDialogIcon(MessageBoxIcon icon)
+            {
+                if (icon == MessageBoxIcon.Error) return SystemIcons.Error;
+                if (icon == MessageBoxIcon.Warning) return SystemIcons.Warning;
+                if (icon == MessageBoxIcon.Question) return SystemIcons.Question;
+                return SystemIcons.Information;
+            }
+        }
+    }
+
+    internal sealed class LargeCheckBox : CheckBox
+    {
+        private bool _hovered;
+
+        internal LargeCheckBox()
+        {
+            AutoSize = false;
+            Size = new Size(506, 30);
+            Font = new Font("Segoe UI", 10F);
+            Cursor = Cursors.Hand;
+            SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint |
+                ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            e.Graphics.Clear(BackColor);
+            e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+
+            const int boxSize = 24;
+            Rectangle box = new Rectangle(1, (Height - boxSize) / 2, boxSize, boxSize);
+            Color accent = Color.FromArgb(0, 174, 239);
+            Color border = _hovered
+                ? accent
+                : (Program.UseDarkTheme ? Color.FromArgb(96, 99, 108) : Color.FromArgb(128, 134, 145));
+            Color fill = Checked ? accent : Program.InputBackColor;
+
+            using (SolidBrush background = new SolidBrush(fill))
+            using (Pen outline = new Pen(border, 1.5F))
+            {
+                e.Graphics.FillRectangle(background, box);
+                e.Graphics.DrawRectangle(outline, box);
+            }
+
+            if (Checked)
+            {
+                using (Pen check = new Pen(Color.White, 2.7F))
+                {
+                    check.StartCap = LineCap.Round;
+                    check.EndCap = LineCap.Round;
+                    check.LineJoin = LineJoin.Round;
+                    e.Graphics.DrawLines(check, new[]
+                    {
+                        new Point(box.Left + 5, box.Top + 12),
+                        new Point(box.Left + 10, box.Bottom - 6),
+                        new Point(box.Right - 4, box.Top + 6)
+                    });
+                }
+            }
+
+            TextRenderer.DrawText(e.Graphics, Text, Font,
+                new Rectangle(box.Right + 16, 0, Math.Max(1, Width - box.Right - 16), Height),
+                Enabled ? ForeColor : Program.SecondaryForeColor,
+                TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine);
+        }
+
+        protected override void OnCheckedChanged(EventArgs e)
+        {
+            base.OnCheckedChanged(e);
+            Invalidate();
+        }
+
+        protected override void OnMouseEnter(EventArgs e)
+        {
+            base.OnMouseEnter(e);
+            _hovered = true;
+            Invalidate();
+        }
+
+        protected override void OnMouseLeave(EventArgs e)
+        {
+            base.OnMouseLeave(e);
+            _hovered = false;
+            Invalidate();
+        }
+    }
+
     internal sealed class SetupForm : Form
     {
         private readonly Label _status;
@@ -1046,12 +1287,12 @@ namespace PcTempInstaller
         {
             bool installed = Program.IsInstalled;
             Text = "Instalador de PcTemp " + Program.Version;
-            ClientSize = new Size(570, 450);
+            ClientSize = new Size(570, 510);
             FormBorderStyle = FormBorderStyle.FixedDialog;
             MaximizeBox = false;
             StartPosition = FormStartPosition.CenterScreen;
-            BackColor = Color.FromArgb(24, 24, 27);
-            ForeColor = Color.White;
+            BackColor = Program.WindowBackColor;
+            ForeColor = Program.WindowForeColor;
             Font = new Font("Segoe UI", 9F);
             try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
 
@@ -1073,19 +1314,19 @@ namespace PcTempInstaller
             _installPathLabel = new Label
             {
                 Text = "Carpeta de instalación:",
-                ForeColor = Color.Gainsboro,
+                ForeColor = Program.WindowForeColor,
                 AutoSize = true,
-                Location = new Point(32, 111)
+                Location = new Point(32, 184)
             };
             Controls.Add(_installPathLabel);
 
             _installPath = new TextBox
             {
                 Text = Program.SuggestedInstallDirectory,
-                Location = new Point(32, 135),
+                Location = new Point(32, 208),
                 Size = new Size(390, 25),
-                BackColor = Color.FromArgb(38, 39, 44),
-                ForeColor = Color.White,
+                BackColor = Program.InputBackColor,
+                ForeColor = Program.WindowForeColor,
                 BorderStyle = BorderStyle.FixedSingle
             };
             Controls.Add(_installPath);
@@ -1093,64 +1334,67 @@ namespace PcTempInstaller
             _browse = new Button
             {
                 Text = "Examinar…",
-                Location = new Point(434, 133),
+                Location = new Point(434, 206),
                 Size = new Size(104, 29),
-                BackColor = Color.FromArgb(55, 57, 64),
-                ForeColor = Color.White,
+                BackColor = Program.ButtonBackColor,
+                ForeColor = Program.WindowForeColor,
                 FlatStyle = FlatStyle.Flat,
+                UseVisualStyleBackColor = false,
                 Cursor = Cursors.Hand
             };
             _browse.Click += BrowseClicked;
             Controls.Add(_browse);
 
-            _desktopShortcut = new CheckBox
+            _desktopShortcut = new LargeCheckBox
             {
                 Text = "Crear acceso directo en el escritorio",
                 Checked = installed ? Program.DesktopShortcutExists : true,
-                AutoSize = true,
-                Location = new Point(32, 177),
-                ForeColor = Color.White,
-                UseVisualStyleBackColor = true
+                Location = new Point(32, 252),
+                BackColor = Program.WindowBackColor,
+                ForeColor = Program.WindowForeColor,
+                UseVisualStyleBackColor = false
             };
             Controls.Add(_desktopShortcut);
 
-            _errorReports = new CheckBox
+            _errorReports = new LargeCheckBox
             {
                 Text = "Ayudar a mejorar la aplicación enviando informes anónimos de fallos",
                 Checked = Program.LoadErrorReportConsent(),
-                AutoSize = true,
-                Location = new Point(32, 275),
-                ForeColor = Color.White,
-                UseVisualStyleBackColor = true
+                Location = new Point(32, 302),
+                BackColor = Program.WindowBackColor,
+                ForeColor = Program.WindowForeColor,
+                UseVisualStyleBackColor = false,
+                Visible = !installed
             };
             Controls.Add(_errorReports);
 
             _errorReportsInfo = new Label
             {
                 Text = "Privacidad: la opción viene marcada, puedes desmarcarla antes de instalar o cambiarla después desde la aplicación.",
-                ForeColor = Color.DarkGray,
+                ForeColor = Program.SecondaryForeColor,
                 AutoSize = false,
-                Size = new Size(485, 40),
-                Location = new Point(51, 298)
+                Size = new Size(466, 42),
+                Location = new Point(70, 337),
+                Visible = !installed
             };
             Controls.Add(_errorReportsInfo);
 
             _features = new Label
             {
                 Text = "✓ PawnIO 2.2.0 integrado\n✓ Inicio automático con Windows\n✓ Desinstalación completa de archivos, tareas y registro",
-                ForeColor = Color.Gainsboro,
+                ForeColor = Program.WindowForeColor,
                 AutoSize = true,
-                Location = new Point(32, 213)
+                Location = new Point(32, 112)
             };
             Controls.Add(_features);
 
             _status = new Label
             {
                 Text = installed ? "PcTemp ya está instalado. Puedes actualizarlo o repararlo." : "Listo para instalar.",
-                ForeColor = Color.DarkGray,
+                ForeColor = Program.SecondaryForeColor,
                 AutoSize = false,
                 Size = new Size(506, 42),
-                Location = new Point(32, 348)
+                Location = new Point(32, 400)
             };
             Controls.Add(_status);
 
@@ -1161,7 +1405,7 @@ namespace PcTempInstaller
                 ForeColor = Color.White,
                 FlatStyle = FlatStyle.Flat,
                 Size = new Size(170, 36),
-                Location = new Point(368, 400),
+                Location = new Point(368, 458),
                 Cursor = Cursors.Hand
             };
             _install.Click += InstallClicked;
@@ -1174,13 +1418,13 @@ namespace PcTempInstaller
                 ForeColor = Color.White,
                 FlatStyle = FlatStyle.Flat,
                 Size = new Size(170, 36),
-                Location = new Point(178, 325),
+                Location = new Point(178, 458),
                 Cursor = Cursors.Hand,
                 Visible = installed
             };
             _uninstall.Click += delegate
             {
-                if (Program.BeginUninstall()) Close();
+                if (Program.BeginUninstall(this)) Close();
             };
             Controls.Add(_uninstall);
             if (installed) ApplyCompletedLayout();
@@ -1198,14 +1442,33 @@ namespace PcTempInstaller
             _installPath.Visible = false;
             _browse.Visible = false;
             _desktopShortcut.Visible = false;
-            _features.Location = new Point(32, 116);
-            _errorReports.Location = new Point(32, 188);
-            _errorReportsInfo.Location = new Point(51, 213);
-            _status.Location = new Point(32, 275);
-            _install.Location = new Point(368, 325);
-            _uninstall.Location = new Point(178, 325);
+            _features.Visible = false;
+            _errorReports.Visible = false;
+            _errorReportsInfo.Visible = false;
+            _status.Location = new Point(32, 125);
+            _install.Location = new Point(368, 185);
+            _uninstall.Location = new Point(178, 185);
             _uninstall.Visible = true;
-            ClientSize = new Size(570, 375);
+            ClientSize = new Size(570, 245);
+        }
+
+        private void ApplyFinishedLayout()
+        {
+            _installPathLabel.Visible = false;
+            _installPath.Visible = false;
+            _browse.Visible = false;
+            _desktopShortcut.Visible = false;
+            _features.Visible = false;
+            _errorReports.Visible = false;
+            _errorReportsInfo.Visible = false;
+            _uninstall.Visible = false;
+            _status.Location = new Point(32, 125);
+            _install.Location = new Point(368, 185);
+            _install.Text = "Cerrar instalador";
+            _install.Click -= InstallClicked;
+            _install.Click += delegate { Close(); };
+            _install.Enabled = true;
+            ClientSize = new Size(570, 245);
         }
 
         private void BrowseClicked(object sender, EventArgs e)
@@ -1243,12 +1506,8 @@ namespace PcTempInstaller
                 _status.Text = rebootRequired
                     ? "Instalación completa. Reinicia Windows para activar los sensores."
                     : "PcTemp y PawnIO se han instalado correctamente.";
-                _status.ForeColor = Color.LightGreen;
-                ApplyCompletedLayout();
-                _install.Text = "Cerrar";
-                _install.Click -= InstallClicked;
-                _install.Click += delegate { Close(); };
-                _install.Enabled = true;
+                _status.ForeColor = Program.UseDarkTheme ? Color.LightGreen : Color.ForestGreen;
+                ApplyFinishedLayout();
             }
             catch (Exception ex)
             {

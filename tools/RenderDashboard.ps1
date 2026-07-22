@@ -103,7 +103,7 @@ for ($sample = 0; $sample -lt 18; $sample++) {
     for ($index = 0; $index -lt $names.Count; $index++) {
         $diskType.GetField('Value').SetValue($disks[$index], [single]($temperatures[$index] + [Math]::Sin(($sample + $index) / 3.0) * 2))
     }
-    [void]$updateValues.Invoke($form, [object[]]@($snapshot, 5, $true, $true, $true))
+    [void]$updateValues.Invoke($form, [object[]]@($snapshot, 5, $true, $true, $true, $false))
 }
 if ($ClientWidth -gt 0) {
     $form.ClientSize = [Drawing.Size]::new($ClientWidth, $form.ClientSize.Height)
